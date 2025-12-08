@@ -1,0 +1,29 @@
+Plan:
+We want to create a hand-sign detection on images to be able to do "next" and "previous" that we usually do on presentation. 
+While in presentation we need to press the arrow-key on a keyboard to do "next" and "previous", we want to make a computer vision and resulting output of "next" or "previous" based on our hand gesture capture in a form of images from a live camera
+
+Restriction:
+- Make our own dataset
+- No using deep-learning model, we should use conventional model
+- We should use at least one feature detection (I'm opened to use more than 1 feature extraction)
+
+Progress List:
+- Already capture photos of "next" and "previous" from 4 persons each. The images consist of this following scenarios:
+    - Close :
+        - 5x images of our hand showing "next" hand gestures
+        - 5x images of our hand showing "previous" hand gentures
+    - A bit Further
+        - 5x images of our hand showing "next" hand gestures
+        - 5x images of our hand showing "previous" hand gentures
+
+    So the total of images is 4x20 images.
+
+- The images than sent to roboflow to be preprocessed with this following rules :
+    - The augmentations :
+        - noise
+        - blur
+        - brightness
+    - preprocessing :
+        - resize
+        - grayscale
+    The result is in "Pascal VOC" format. The output is in the folder "Dataset_roboflow" in this directory.

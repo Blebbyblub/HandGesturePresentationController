@@ -6,67 +6,199 @@ import pyautogui
 from skimage.feature import hog
 from pathlib import Path
 import argparse
+from collections import deque
+import statistics
+
+###############################################################################
+# CONFIGURATION SECTION
+# Edit these values to customize the behavior
+###############################################################################
+
+class GestureConfig:
+    """Configuration for Hand Gesture Presentation Controller"""
+    
+    # ========== MODEL SETTINGS ==========
+    MODEL_PATH = "artifacts/gesture_svm_v2.pkl"  # Path to trained model
+    BACKUP_MODEL_PATH = "artifacts/gesture_svm.pkl"  # Fallback model
+    
+    # ========== HOG PARAMETERS (from notebook) ==========
+    HOG_PARAMS = {
+        "orientations": 9,
+        "pixels_per_cell": (16, 16),  # Changed from (8, 8) to (16, 16)
+        "cells_per_block": (2, 2),
+        "transform_sqrt": True,
+        "block_norm": "L2-Hys",
+        "feature_vector": True,
+    }
+    
+    TARGET_IMAGE_SIZE = (128, 128)  # Image size for feature extraction
+    
+    # ========== GESTURE MAPPING ==========
+    LABEL_MAP = {
+        "next": "next",
+        "back": "previous",
+        "prev": "previous"
+    }
+    
+    ACTION_MAP = {
+        "next": "right",  # Right arrow key for next slide
+        "previous": "left"  # Left arrow key for previous slide
+    }
+    
+    # ========== INFERENCE SETTINGS ==========
+    CONFIDENCE_THRESHOLD = 0.70  # Minimum confidence to consider prediction
+    COOLDOWN_SECONDS = 2.0  # Minimum time between triggers
+    
+    # ========== HAND DETECTION SETTINGS ==========
+    USE_MEDIAPIPE = True  # Use MediaPipe for hand detection (recommended)
+    AUTO_ROI_PADDING = 50  # Padding around detected hand (pixels)
+    MIN_HAND_SIZE = 100  # Minimum hand size to detect (pixels)
+    
+    # ========== SMOOTHING SETTINGS ==========
+    SMOOTHING_FRAMES = 5  # Number of frames for consensus voting
+    CONSENSUS_REQUIRED = "all"  # "all" = all frames must agree, "majority" = majority vote
+    
+    # ========== DISPLAY SETTINGS ==========
+    DISPLAY_FPS = True  # Show FPS counter
+    SHOW_HISTORY = True  # Show prediction history
+    SHOW_CONFIDENCE = True  # Show confidence score
+    SHOW_INSTRUCTIONS = False  # Show control instructions (only 'q' to quit)
+    
+    # ========== VISUAL APPEARANCE ==========
+    ROI_COLOR_HIGH_CONF = (0, 255, 0)  # Green for high confidence
+    ROI_COLOR_LOW_CONF = (0, 165, 255)  # Orange for low confidence
+    TEXT_COLOR = (255, 255, 255)  # White text
+    WINDOW_NAME = "Hand Gesture Controller V2"
+    
+    # ========== CAMERA SETTINGS ==========
+    CAMERA_ID = 0  # Default camera ID
+    CAMERA_WIDTH = 640  # Desired camera width
+    CAMERA_HEIGHT = 480  # Desired camera height
+    FLIP_HORIZONTAL = True  # Flip camera horizontally for mirror effect
+    
+    # ========== CONTROL KEYS ==========
+    KEY_QUIT = 'q'  # Only key needed
+    
+    # ========== DEBUG SETTINGS ==========
+    VERBOSE = True  # Print debug information
+    PRINT_PREDICTIONS = False  # Print every prediction (can be noisy)
+    
+    @classmethod
+    def print_config(cls):
+        """Print current configuration"""
+        print("="*50)
+        print("GESTURE CONTROLLER CONFIGURATION")
+        print("="*50)
+        
+        sections = [
+            ("Model Settings", [
+                f"Model Path: {cls.MODEL_PATH}",
+                f"Backup Model: {cls.BACKUP_MODEL_PATH}",
+                f"Confidence Threshold: {cls.CONFIDENCE_THRESHOLD}",
+                f"Cooldown: {cls.COOLDOWN_SECONDS}s",
+            ]),
+            ("HOG Parameters", [
+                f"Image Size: {cls.TARGET_IMAGE_SIZE}",
+                f"Pixels per Cell: {cls.HOG_PARAMS['pixels_per_cell']}",
+                f"Orientations: {cls.HOG_PARAMS['orientations']}",
+            ]),
+            ("Hand Detection", [
+                f"Use MediaPipe: {cls.USE_MEDIAPIPE}",
+                f"ROI Padding: {cls.AUTO_ROI_PADDING}px",
+                f"Min Hand Size: {cls.MIN_HAND_SIZE}px",
+            ]),
+            ("Smoothing", [
+                f"Smoothing Frames: {cls.SMOOTHING_FRAMES}",
+                f"Consensus Required: {cls.CONSENSUS_REQUIRED}",
+            ]),
+            ("Display", [
+                f"Show FPS: {cls.DISPLAY_FPS}",
+                f"Show History: {cls.SHOW_HISTORY}",
+                f"Window Name: {cls.WINDOW_NAME}",
+            ]),
+            ("Camera", [
+                f"Camera ID: {cls.CAMERA_ID}",
+                f"Resolution: {cls.CAMERA_WIDTH}x{cls.CAMERA_HEIGHT}",
+                f"Flip Horizontal: {cls.FLIP_HORIZONTAL}",
+            ]),
+        ]
+        
+        for section_name, settings in sections:
+            print(f"\n{section_name}:")
+            for setting in settings:
+                print(f"  {setting}")
+        
+        print("="*50)
+
+
+###############################################################################
+# MAIN GESTURE CONTROLLER CLASS
+###############################################################################
 
 class GestureController:
-    def __init__(self, model_path=None, confidence_threshold=0.65, 
-                 cooldown_seconds=2.0, use_mediapipe=True):
+    def __init__(self, config_obj=None):
         """
         Initialize the Gesture Controller for real-time hand gesture recognition.
         
         Args:
-            model_path: Path to the trained model bundle (.pkl file)
-            confidence_threshold: Minimum confidence to trigger a gesture
-            cooldown_seconds: Minimum time between consecutive triggers
-            use_mediapipe: Use MediaPipe for hand detection (recommended)
+            config_obj: Configuration object (defaults to GestureConfig)
         """
-        # Set default model path if not provided
-        if model_path is None:
-            base_dir = Path.cwd()
-            model_path = base_dir / "artifacts" / "gesture_svm.pkl"
+        # Use provided config or default
+        self.cfg = config_obj if config_obj else GestureConfig
         
-        self.model_path = Path(model_path)
-        self.confidence_threshold = confidence_threshold
-        self.cooldown_seconds = cooldown_seconds
-        self.use_mediapipe = use_mediapipe
-        
-        # For auto hand detection
-        self.hand_detector = None
-        self.auto_roi_padding = 50  # Padding around detected hand
-        self.current_roi = None
-        self.last_good_roi = None
-        self.hand_detected = False  # Track if hand is currently detected
-        
-        # Load the trained model and parameters
-        self.load_model()
+        # Print configuration
+        if self.cfg.VERBOSE:
+            self.cfg.print_config()
         
         # Initialize state variables
+        self.hand_detector = None
+        self.current_roi = None
+        self.last_good_roi = None
+        self.hand_detected = False
         self.last_trigger = 0.0
         self.cap = None
         
+        # Prediction history for smoothing
+        self.prediction_history = deque(maxlen=self.cfg.SMOOTHING_FRAMES)
+        
+        # Load the trained model
+        self.load_model()
+        
     def load_model(self):
         """Load the trained SVM model and preprocessing parameters."""
+        model_path = Path(self.cfg.MODEL_PATH)
+        
         try:
-            bundle = joblib.load(self.model_path)
-            self.clf = bundle["model"]
-            self.hog_params = bundle["hog_params"]
-            self.target_size = tuple(bundle["target_size"])
-            self.label_map = bundle.get("label_map", {})
-            
-            print(f"✓ Model loaded successfully from {self.model_path}")
+            bundle = joblib.load(model_path)
+            print(f"✓ Model loaded successfully from {model_path}")
+        except FileNotFoundError:
+            if self.cfg.VERBOSE:
+                print(f"⚠️ V2 model not found. Trying backup model...")
+            # Try backup model
+            backup_path = Path(self.cfg.BACKUP_MODEL_PATH)
+            try:
+                bundle = joblib.load(backup_path)
+                print(f"✓ Backup model loaded from {backup_path}")
+            except FileNotFoundError:
+                print(f"❌ Error: No model found at {model_path} or {backup_path}")
+                print("Please run the training notebook first.")
+                raise
+        
+        # Extract model components
+        self.clf = bundle["model"]
+        self.target_size = tuple(bundle.get("target_size", self.cfg.TARGET_IMAGE_SIZE))
+        
+        # Use HOG parameters from config (overriding saved ones if needed)
+        self.hog_params = self.cfg.HOG_PARAMS.copy()
+        
+        if self.cfg.VERBOSE:
             print(f"✓ Target image size: {self.target_size}")
             print(f"✓ Available classes: {self.clf.classes_}")
-            
-        except FileNotFoundError:
-            print(f"Error: Model file not found at {self.model_path}")
-            print("Please run the training notebook first or provide the correct path.")
-            raise
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            raise
+            print(f"✓ Model kernel: {self.clf.kernel}")
     
     def init_hand_detector(self):
-        """Initialize hand detector."""
-        if self.use_mediapipe:
+        """Initialize hand detector based on configuration."""
+        if self.cfg.USE_MEDIAPIPE:
             try:
                 import mediapipe as mp
                 self.mp_hands = mp.solutions.hands
@@ -76,19 +208,22 @@ class GestureController:
                     min_detection_confidence=0.5,
                     min_tracking_confidence=0.5
                 )
-                print("✓ MediaPipe hand detector initialized")
+                if self.cfg.VERBOSE:
+                    print("✓ MediaPipe hand detector initialized")
                 return True
             except ImportError:
-                print("⚠️ MediaPipe not installed. Using skin detection.")
-                print("   Install with: pip install mediapipe")
-                self.use_mediapipe = False
+                if self.cfg.VERBOSE:
+                    print("⚠️ MediaPipe not installed. Using skin detection.")
+                    print("   Install with: pip install mediapipe")
+                return False
         
-        # Initialize OpenCV-based skin detector (fallback)
-        print("✓ Using OpenCV skin detection")
+        # If MediaPipe is disabled or not available
+        if self.cfg.VERBOSE:
+            print("✓ Using OpenCV skin detection")
         return True
     
     def detect_hand_with_mediapipe(self, frame):
-        """Detect hand using MediaPipe and return ROI around it."""
+        """Detect hand using MediaPipe."""
         if not self.hand_detector:
             return None
         
@@ -106,44 +241,30 @@ class GestureController:
             x_min, x_max = int(min(x_coords)), int(max(x_coords))
             y_min, y_max = int(min(y_coords)), int(max(y_coords))
             
-            # Add padding
-            x_min = max(0, x_min - self.auto_roi_padding)
-            y_min = max(0, y_min - self.auto_roi_padding)
-            x_max = min(w, x_max + self.auto_roi_padding)
-            y_max = min(h, y_max + self.auto_roi_padding)
+            # Add padding and ensure minimum size
+            roi = self._adjust_roi_with_constraints(x_min, y_min, x_max, y_max, frame.shape)
             
-            # Ensure minimum size (at least 100x100 pixels)
-            if (x_max - x_min) < 100:
-                center_x = (x_min + x_max) // 2
-                x_min = max(0, center_x - 50)
-                x_max = min(w, center_x + 50)
-            
-            if (y_max - y_min) < 100:
-                center_y = (y_min + y_max) // 2
-                y_min = max(0, center_y - 50)
-                y_max = min(h, center_y + 50)
-            
-            # Update last good ROI
-            self.last_good_roi = (x_min, y_min, x_max, y_max)
-            self.hand_detected = True
-            return self.last_good_roi
-        else:
-            self.hand_detected = False
-            return None
+            if roi:
+                self.last_good_roi = roi
+                self.hand_detected = True
+                return roi
+        
+        self.hand_detected = False
+        return None
     
     def detect_hand_with_skincolor(self, frame):
-        """Detect hand using skin color detection (fallback method)."""
+        """Detect hand using skin color detection."""
         # Convert to HSV color space
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Define skin color range (adjust these values based on lighting)
+        # Define skin color range
         lower_skin = np.array([0, 20, 70], dtype=np.uint8)
         upper_skin = np.array([20, 255, 255], dtype=np.uint8)
         
         # Create skin mask
         mask = cv2.inRange(hsv, lower_skin, upper_skin)
         
-        # Apply morphological operations to clean up mask
+        # Clean up mask
         kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -152,80 +273,84 @@ class GestureController:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
-            # Find the largest contour (likely the hand)
+            # Find the largest contour
             largest_contour = max(contours, key=cv2.contourArea)
-            
-            # Get bounding rectangle
             x, y, w, h = cv2.boundingRect(largest_contour)
             
-            # Skip if too small (likely noise)
+            # Skip if too small
             if w < 50 or h < 50:
                 self.hand_detected = False
                 return None
             
-            # Add padding
-            padding = self.auto_roi_padding
-            x_min = max(0, x - padding)
-            y_min = max(0, y - padding)
-            x_max = min(frame.shape[1], x + w + padding)
-            y_max = min(frame.shape[0], y + h + padding)
+            # Add padding and adjust
+            x_min = max(0, x - self.cfg.AUTO_ROI_PADDING)
+            y_min = max(0, y - self.cfg.AUTO_ROI_PADDING)
+            x_max = min(frame.shape[1], x + w + self.cfg.AUTO_ROI_PADDING)
+            y_max = min(frame.shape[0], y + h + self.cfg.AUTO_ROI_PADDING)
             
-            # Update last good ROI
-            self.last_good_roi = (x_min, y_min, x_max, y_max)
+            roi = (x_min, y_min, x_max, y_max)
+            self.last_good_roi = roi
             self.hand_detected = True
-            return self.last_good_roi
-        else:
-            self.hand_detected = False
-            return None
+            return roi
+        
+        self.hand_detected = False
+        return None
+    
+    def _adjust_roi_with_constraints(self, x_min, y_min, x_max, y_max, frame_shape):
+        """Adjust ROI with padding and minimum size constraints."""
+        h, w = frame_shape[:2]
+        
+        # Add padding
+        x_min = max(0, x_min - self.cfg.AUTO_ROI_PADDING)
+        y_min = max(0, y_min - self.cfg.AUTO_ROI_PADDING)
+        x_max = min(w, x_max + self.cfg.AUTO_ROI_PADDING)
+        y_max = min(h, y_max + self.cfg.AUTO_ROI_PADDING)
+        
+        # Ensure minimum size
+        if (x_max - x_min) < self.cfg.MIN_HAND_SIZE:
+            center_x = (x_min + x_max) // 2
+            half_size = self.cfg.MIN_HAND_SIZE // 2
+            x_min = max(0, center_x - half_size)
+            x_max = min(w, center_x + half_size)
+        
+        if (y_max - y_min) < self.cfg.MIN_HAND_SIZE:
+            center_y = (y_min + y_max) // 2
+            half_size = self.cfg.MIN_HAND_SIZE // 2
+            y_min = max(0, center_y - half_size)
+            y_max = min(h, center_y + half_size)
+        
+        return (x_min, y_min, x_max, y_max)
     
     def get_current_roi(self, frame):
-        """Get ROI by detecting hand position. Returns None if no hand."""
-        # Try to detect hand
-        if self.use_mediapipe and self.hand_detector:
+        """Get ROI by detecting hand position."""
+        if self.hand_detector and self.cfg.USE_MEDIAPIPE:
             roi = self.detect_hand_with_mediapipe(frame)
         else:
             roi = self.detect_hand_with_skincolor(frame)
         
-        if roi:
-            self.current_roi = roi
-            return roi
-        else:
-            # No hand detected
-            self.current_roi = None
-            return None
+        self.current_roi = roi
+        return roi
     
     def preprocess_frame(self, frame, roi_bounds):
-        """
-        Preprocess the ROI frame for inference.
-        
-        Args:
-            frame: Input frame from webcam
-            roi_bounds: Current ROI bounds (or None if no hand)
-            
-        Returns:
-            HOG descriptor for the ROI, or None if no hand
-        """
+        """Preprocess the ROI frame for inference."""
         if roi_bounds is None:
-            # No hand detected
             return None
         
         x0, y0, x1, y1 = roi_bounds
         
-        # Ensure ROI is valid
+        # Validate ROI
         if x1 <= x0 or y1 <= y0:
             return None
         
-        # Extract ROI
+        # Extract and preprocess ROI
         roi_frame = frame[y0:y1, x0:x1]
-        
-        # Check if ROI is empty
         if roi_frame.size == 0:
             return None
         
         # Convert to grayscale
         gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
         
-        # Resize to target size
+        # Resize
         resized = cv2.resize(gray, self.target_size)
         
         # Normalize
@@ -236,341 +361,363 @@ class GestureController:
         
         return descriptor.reshape(1, -1)
     
-    def predict_gesture(self, frame):
-        """
-        Predict gesture from the ROI in the frame.
+    def get_consensus_prediction(self):
+        """Get consensus prediction from history."""
+        if len(self.prediction_history) < self.cfg.SMOOTHING_FRAMES:
+            return None
         
-        Args:
-            frame: Input frame from webcam
-            
-        Returns:
-            predicted_label: The predicted gesture class or None if no hand
-            confidence: Confidence score (0-1) or 0 if no hand
-            processed_frame: Frame with ROI overlay
-        """
-        # Create a copy for display
+        if self.cfg.CONSENSUS_REQUIRED == "all":
+            # All frames must agree
+            first_pred = self.prediction_history[0]
+            if all(pred == first_pred for pred in self.prediction_history):
+                return first_pred if first_pred != "neutral" else None
+        elif self.cfg.CONSENSUS_REQUIRED == "majority":
+            # Majority vote
+            try:
+                most_common = statistics.mode(self.prediction_history)
+                count = self.prediction_history.count(most_common)
+                if count > len(self.prediction_history) // 2 and most_common != "neutral":
+                    return most_common
+            except statistics.StatisticsError:
+                pass
+        
+        return None
+    
+    def predict_gesture(self, frame):
+        """Predict gesture from frame with smoothing."""
         display_frame = frame.copy()
         
-        # Get current ROI by detecting hand
+        # Get ROI
         current_roi = self.get_current_roi(frame)
         
-        # Initialize default values
-        predicted_label = None
+        # Initialize values
+        current_label = None
         confidence = 0.0
         
         if current_roi and self.hand_detected:
-            # Extract and preprocess ROI
+            # Extract features and predict
             descriptor = self.preprocess_frame(frame, current_roi)
             
             if descriptor is not None:
-                # Predict
                 proba = self.clf.predict_proba(descriptor)[0]
                 top_idx = int(np.argmax(proba))
-                predicted_label = self.clf.classes_[top_idx]
+                current_label = self.clf.classes_[top_idx]
                 confidence = float(proba[top_idx])
-            
-            # Draw ROI rectangle with color based on confidence
-            x0, y0, x1, y1 = current_roi
-            
-            # Draw semi-transparent overlay
-            overlay = display_frame.copy()
-            if confidence >= self.confidence_threshold:
-                color = (0, 255, 0)  # Green - high confidence
-                overlay_color = (0, 255, 0)
-            else:
-                color = (0, 165, 255)  # Orange - low confidence
-                overlay_color = (0, 165, 255)
                 
-            cv2.rectangle(overlay, (x0, y0), (x1, y1), overlay_color, -1)
-            cv2.addWeighted(overlay, 0.1, display_frame, 0.9, 0, display_frame)
+                if self.cfg.PRINT_PREDICTIONS:
+                    print(f"Prediction: {current_label} ({confidence:.2f})")
             
-            # Draw ROI border
-            thickness = 3 if confidence >= self.confidence_threshold else 2
-            cv2.rectangle(display_frame, (x0, y0), (x1, y1), color, thickness)
+            # Update history
+            if confidence > self.cfg.CONFIDENCE_THRESHOLD:
+                self.prediction_history.append(current_label)
+            else:
+                self.prediction_history.append("neutral")
             
-            # Draw label and confidence
-            label_text = f"{predicted_label}: {confidence:.2f}"
-            cv2.putText(
-                display_frame,
-                label_text,
-                (x0, y0 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                color,
-                2,
-            )
+            # Draw ROI and info
+            self._draw_roi_and_info(display_frame, current_roi, current_label, confidence)
         else:
-            # No hand detected - show message
-            h, w = frame.shape[:2]
-            cv2.putText(
-                display_frame,
-                "NO HAND DETECTED",
-                (w//2 - 100, h//2),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 0, 255),
-                2,
-            )
-            
-            # Draw hand silhouette as hint
-            cv2.putText(
-                display_frame,
-                "Show your hand to begin",
-                (w//2 - 120, h//2 + 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                1,
-            )
+            # No hand detected
+            self.prediction_history.clear()
+            self._draw_no_hand_message(display_frame)
         
-        # Draw detection method
-        method_text = "MediaPipe" if (self.use_mediapipe and self.hand_detector) else "Skin Detection"
+        # Get consensus prediction
+        consensus_label = self.get_consensus_prediction()
+        
+        # Draw UI elements
+        self._draw_ui_elements(display_frame, consensus_label)
+        
+        return consensus_label, confidence, display_frame
+    
+    def _draw_roi_and_info(self, frame, roi, label, confidence):
+        """Draw ROI and prediction info on frame."""
+        x0, y0, x1, y1 = roi
+        
+        # Choose color based on confidence
+        if confidence >= self.cfg.CONFIDENCE_THRESHOLD:
+            color = self.cfg.ROI_COLOR_HIGH_CONF
+        else:
+            color = self.cfg.ROI_COLOR_LOW_CONF
+        
+        # Draw semi-transparent overlay
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (x0, y0), (x1, y1), color, -1)
+        cv2.addWeighted(overlay, 0.1, frame, 0.9, 0, frame)
+        
+        # Draw ROI border
+        thickness = 3 if confidence >= self.cfg.CONFIDENCE_THRESHOLD else 2
+        cv2.rectangle(frame, (x0, y0), (x1, y1), color, thickness)
+        
+        # Draw label and confidence
+        if self.cfg.SHOW_CONFIDENCE:
+            label_text = f"{label}: {confidence:.2f}"
+        else:
+            label_text = f"{label}"
+        
         cv2.putText(
-            display_frame,
-            f"Hand Detection: {method_text}",
-            (10, 30),
+            frame,
+            label_text,
+            (x0, y0 - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
+            0.7,
+            color,
+            2,
+        )
+    
+    def _draw_no_hand_message(self, frame):
+        """Draw message when no hand is detected."""
+        h, w = frame.shape[:2]
+        cv2.putText(
+            frame,
+            "NO HAND DETECTED",
+            (w//2 - 100, h//2),
+            cv2.FONT_HERSHEY_SIMPLEX,
             1,
+            (0, 0, 255),
+            2,
         )
         
-        # Draw hand status
+        cv2.putText(
+            frame,
+            "Show your hand to begin",
+            (w//2 - 120, h//2 + 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            self.cfg.TEXT_COLOR,
+            1,
+        )
+    
+    def _draw_ui_elements(self, frame, consensus_label):
+        """Draw UI elements on frame."""
+        y_offset = 30
+        line_height = 25
+        
+        # Detection method
+        method = "MediaPipe" if (self.hand_detector and self.cfg.USE_MEDIAPIPE) else "Skin"
+        cv2.putText(
+            frame,
+            f"Detection: {method}",
+            (10, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            self.cfg.TEXT_COLOR,
+            1,
+        )
+        y_offset += line_height
+        
+        # Hand status
         status_color = (0, 255, 0) if self.hand_detected else (0, 0, 255)
         status_text = "HAND DETECTED" if self.hand_detected else "NO HAND"
         cv2.putText(
-            display_frame,
+            frame,
             f"Status: {status_text}",
-            (10, 60),
+            (10, y_offset),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
             status_color,
             1,
         )
+        y_offset += line_height
         
-        # Draw instructions
-        instructions = [
-            "Move hand anywhere in frame",
-            "Press 'q' to quit",
-            "Press 'c' to change confidence",
-            "Press '+' to increase padding",
-            "Press '-' to decrease padding"
-        ]
-        
-        for i, text in enumerate(instructions):
+        # Prediction history
+        if self.cfg.SHOW_HISTORY and len(self.prediction_history) > 0:
+            hist_str = " ".join([p[0].upper() for p in self.prediction_history])
             cv2.putText(
-                display_frame,
-                text,
-                (10, 90 + i * 25),
+                frame,
+                f"History: [{hist_str}]",
+                (10, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                (255, 255, 255),
+                self.cfg.TEXT_COLOR,
                 1,
             )
+            y_offset += line_height
         
-        # Draw FPS (if available)
-        if hasattr(self, 'fps'):
+        # Consensus
+        if consensus_label:
             cv2.putText(
-                display_frame,
+                frame,
+                f"Consensus: {consensus_label} ✓",
+                (10, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                1,
+            )
+            y_offset += line_height
+        
+        # Simple quit instruction only
+        if self.cfg.SHOW_INSTRUCTIONS:
+            cv2.putText(
+                frame,
+                f"Press '{self.cfg.KEY_QUIT}' to quit",
+                (10, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                self.cfg.TEXT_COLOR,
+                1,
+            )
+            y_offset += line_height
+        
+        # FPS
+        if self.cfg.DISPLAY_FPS and hasattr(self, 'fps'):
+            cv2.putText(
+                frame,
                 f"FPS: {self.fps:.1f}",
                 (10, frame.shape[0] - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
-                (255, 255, 255),
+                self.cfg.TEXT_COLOR,
                 2,
             )
-        
-        return predicted_label, confidence, display_frame
     
     def trigger_action(self, predicted_label):
-        """
-        Trigger the appropriate action based on predicted gesture.
-        
-        Args:
-            predicted_label: The predicted gesture class (None if no hand)
-        """
-        if predicted_label is None:
+        """Trigger action based on predicted gesture."""
+        if predicted_label not in self.cfg.ACTION_MAP:
             return False
         
         current_time = time.time()
         
         # Check cooldown
-        if (current_time - self.last_trigger) < self.cooldown_seconds:
+        if (current_time - self.last_trigger) < self.cfg.COOLDOWN_SECONDS:
             return False
         
-        # Map gesture to action
-        if predicted_label == "next":
-            key_to_press = "right"
-            action = "Next Slide"
-        elif predicted_label == "previous":
-            key_to_press = "left"
-            action = "Previous Slide"
-        else:
-            return False
+        # Get key to press
+        key_to_press = self.cfg.ACTION_MAP[predicted_label]
         
         # Trigger action
         try:
             pyautogui.press(key_to_press)
             self.last_trigger = current_time
-            print(f"✓ Triggered: {action} ({predicted_label})")
+            
+            if self.cfg.VERBOSE:
+                action = "Next" if predicted_label == "next" else "Previous"
+                print(f"✓ Triggered: {action} Slide")
+            
             return True
         except Exception as e:
-            print(f"Error triggering action: {e}")
+            if self.cfg.VERBOSE:
+                print(f"Error triggering action: {e}")
             return False
     
     def run(self):
         """Main loop for real-time gesture recognition."""
         print("\n" + "="*50)
-        print("HAND GESTURE PRESENTATION CONTROLLER")
+        print(f"{self.cfg.WINDOW_NAME}")
         print("="*50)
-        print("Features:")
-        print("- Automatic hand tracking (no fixed box needed)")
-        print("- Hand can move anywhere in the frame")
-        print("- No detection when hand is not present")
-        print(f"- Using: {'MediaPipe' if self.use_mediapipe else 'Skin Detection'}")
+        print(f"Controls:")
+        print(f"  {self.cfg.KEY_QUIT}: Quit")
         print("="*50)
-        print("Controls:")
-        print("- Show hand: ROI automatically follows")
-        print("- Remove hand: Detection stops immediately")
-        print("- 'q': Quit")
-        print("- 'c': Change confidence threshold")
-        print("- '+': Increase padding around hand")
-        print("- '-': Decrease padding around hand")
-        print("="*50 + "\n")
         
-        # Initialize webcam
-        self.cap = cv2.VideoCapture(0)
+        # Initialize camera
+        self.cap = cv2.VideoCapture(self.cfg.CAMERA_ID)
         if not self.cap.isOpened():
-            print("Error: Unable to open webcam.")
-            print("Please ensure a camera is connected and not in use.")
+            print("❌ Error: Unable to open webcam.")
             return
         
-        # Get camera properties
-        self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"Camera resolution: {self.frame_width}x{self.frame_height}")
+        # Set camera resolution if possible
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.CAMERA_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.CAMERA_HEIGHT)
         
         # Initialize hand detector
-        if not self.init_hand_detector():
-            print("Error: Failed to initialize hand detector.")
-            return
+        self.init_hand_detector()
         
         # Create window
-        cv2.namedWindow("Hand Gesture Controller")
-        
-        print(f"Confidence threshold: {self.confidence_threshold}")
-        print(f"Cooldown: {self.cooldown_seconds} seconds")
-        print(f"ROI padding: {self.auto_roi_padding} pixels")
-        print("\nStarting automatic gesture recognition...")
-        print("Show your hand to begin detection!")
+        cv2.namedWindow(self.cfg.WINDOW_NAME)
         
         # FPS calculation
         frame_count = 0
         start_time = time.time()
+        
+        print("\nStarting gesture controller...")
+        print("Show your hand to begin detection!\n")
         
         try:
             while True:
                 # Read frame
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("Error: Failed to capture frame.")
+                    print("❌ Error: Failed to capture frame.")
                     break
                 
-                # Flip frame horizontally for more intuitive interaction
-                frame = cv2.flip(frame, 1)
+                # Flip frame if configured
+                if self.cfg.FLIP_HORIZONTAL:
+                    frame = cv2.flip(frame, 1)
                 
-                # Predict gesture (returns None if no hand)
+                # Predict gesture
                 predicted_label, confidence, display_frame = self.predict_gesture(frame)
                 
-                # Trigger action only if hand is detected AND confidence is high enough
-                if predicted_label is not None and confidence >= self.confidence_threshold:
-                    self.trigger_action(predicted_label)
+                # Trigger action if consensus reached
+                if predicted_label:
+                    if self.trigger_action(predicted_label):
+                        # Flash ROI to indicate action
+                        if self.current_roi:
+                            x0, y0, x1, y1 = self.current_roi
+                            cv2.rectangle(display_frame, (x0, y0), (x1, y1), (0, 255, 0), 6)
                 
                 # Calculate FPS
                 frame_count += 1
                 elapsed_time = time.time() - start_time
-                if elapsed_time > 1.0:  # Update FPS every second
+                if elapsed_time > 1.0:
                     self.fps = frame_count / elapsed_time
                     frame_count = 0
                     start_time = time.time()
                 
                 # Display frame
-                cv2.imshow("Hand Gesture Controller", display_frame)
+                cv2.imshow(self.cfg.WINDOW_NAME, display_frame)
                 
-                # Handle keyboard input
+                # Handle keyboard input - only 'q' to quit
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                if key == ord(self.cfg.KEY_QUIT):
                     print("\nExiting gesture controller...")
                     break
-                elif key == ord('c'):
-                    # Change confidence threshold
-                    try:
-                        new_threshold = float(input("\nEnter new confidence threshold (0.1-0.9): "))
-                        if 0.1 <= new_threshold <= 0.9:
-                            self.confidence_threshold = new_threshold
-                            print(f"Confidence threshold set to: {new_threshold}")
-                        else:
-                            print("Threshold must be between 0.1 and 0.9")
-                    except ValueError:
-                        print("Invalid input. Using current threshold.")
-                    
-                elif key == ord('+'):
-                    # Increase ROI padding
-                    self.auto_roi_padding = min(150, self.auto_roi_padding + 10)
-                    print(f"\nPadding increased to: {self.auto_roi_padding} pixels")
-                    
-                elif key == ord('-'):
-                    # Decrease ROI padding
-                    self.auto_roi_padding = max(20, self.auto_roi_padding - 10)
-                    print(f"\nPadding decreased to: {self.auto_roi_padding} pixels")
-                    
-                elif key == ord('d'):
-                    # Toggle detection method (if MediaPipe is available)
-                    if self.use_mediapipe:
-                        self.use_mediapipe = not self.use_mediapipe
-                        method = "MediaPipe" if self.use_mediapipe else "Skin Detection"
-                        print(f"\nDetection method changed to: {method}")
                 
         except KeyboardInterrupt:
             print("\nGesture controller interrupted by user.")
         finally:
-            # Cleanup
-            if self.cap:
-                self.cap.release()
-            if self.hand_detector:
-                self.hand_detector.close()
-            cv2.destroyAllWindows()
+            self._cleanup()
+    
+    def _cleanup(self):
+        """Clean up resources."""
+        if self.cap:
+            self.cap.release()
+        if self.hand_detector:
+            self.hand_detector.close()
+        cv2.destroyAllWindows()
+        
+        if self.cfg.VERBOSE:
             print("Camera released. Goodbye!")
 
-def main():
-    """Main function to run the gesture controller."""
-    parser = argparse.ArgumentParser(description='Hand Gesture Presentation Controller with Auto Tracking')
-    parser.add_argument('--model', type=str, default=None,
-                       help='Path to trained model (default: artifacts/gesture_svm.pkl)')
-    parser.add_argument('--confidence', type=float, default=0.65,
-                       help='Confidence threshold (default: 0.65)')
-    parser.add_argument('--cooldown', type=float, default=2.0,
-                       help='Cooldown between actions in seconds (default: 2.0)')
-    parser.add_argument('--padding', type=int, default=50,
-                       help='Padding around detected hand in pixels (default: 50)')
-    parser.add_argument('--no-mediapipe', action='store_true',
-                       help='Disable MediaPipe (use skin detection instead)')
-    
-    args = parser.parse_args()
-    
-    # Create gesture controller
-    controller = GestureController(
-        model_path=args.model,
-        confidence_threshold=args.confidence,
-        cooldown_seconds=args.cooldown,
-        use_mediapipe=not args.no_mediapipe
-    )
-    
-    # Set padding
-    controller.auto_roi_padding = args.padding
-    
-    # Run the controller
+
+###############################################################################
+# SIMPLE RUNNER (no command line arguments needed)
+###############################################################################
+
+def run_simple():
+    """Run the gesture controller with default settings."""
+    controller = GestureController(GestureConfig)
     controller.run()
 
+
+def run_with_custom_config():
+    """Run with custom configuration (edit values below)."""
+    
+    # Create custom configuration by modifying the default
+    class CustomConfig(GestureConfig):
+        # Override any settings you want
+        CONFIDENCE_THRESHOLD = 0.65  # Lower threshold
+        SMOOTHING_FRAMES = 3  # Fewer frames for faster response
+        AUTO_ROI_PADDING = 40  # Less padding
+        USE_MEDIAPIPE = False  # Use skin detection instead
+        SHOW_INSTRUCTIONS = False  # Don't show instructions on screen
+    
+    # Run with custom config
+    controller = GestureController(CustomConfig)
+    controller.run()
+
+
 if __name__ == "__main__":
-    main()
+    # Option 1: Run with default settings (recommended)
+    run_simple()
+    
+    # Option 2: Run with custom configuration (edit above)
+    # run_with_custom_config()

@@ -1,8 +1,8 @@
 
-Hand Sign - v2 2025-12-02 5:45pm
+Hand Sign - v3 NEWESTDATASET
 ==============================
 
-This dataset was exported via roboflow.com on December 2, 2025 at 10:55 AM GMT
+This dataset was exported via roboflow.com on December 14, 2025 at 2:51 PM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,7 +17,7 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 195 images.
+The dataset includes 407 images.
 Objects are annotated in Pascal VOC format.
 
 The following pre-processing was applied to each image:
@@ -26,8 +26,9 @@ The following pre-processing was applied to each image:
 * Grayscale (CRT phosphor)
 
 The following augmentation was applied to create 3 versions of each source image:
-* Random brigthness adjustment of between -15 and +15 percent
-* Random Gaussian blur of between 0 and 2.5 pixels
-* Salt and pepper noise was applied to 1.96 percent of pixels
+* 50% probability of horizontal flip
+* Random brigthness adjustment of between -20 and +20 percent
+* Random Gaussian blur of between 0 and 3 pixels
+* Salt and pepper noise was applied to 2 percent of pixels
 
 

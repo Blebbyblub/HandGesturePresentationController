@@ -1,0 +1,29 @@
+<annotation>
+	<folder></folder>
+	<filename>IMG_20251211_151336_jpg.rf.9bdf9b4a3c32dc193fcba8e9b8b3df72.jpg</filename>
+	<path>IMG_20251211_151336_jpg.rf.9bdf9b4a3c32dc193fcba8e9b8b3df72.jpg</path>
+	<source>
+		<database>roboflow.com</database>
+	</source>
+	<size>
+		<width>512</width>
+		<height>512</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>back</name>
+		<pose>Unspecified</pose>
+		<truncated>0</truncated>
+		<difficult>0</difficult>
+		<occluded>0</occluded>
+		<bndbox>
+			<xmin>177</xmin>
+			<xmax>353</xmax>
+			<ymin>161</ymin>
+			<ymax>229</ymax>
+		</bndbox>
+	</object>
+	<metadata>
+	</metadata>
+</annotation>

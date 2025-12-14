@@ -22,7 +22,7 @@ class GestureController:
         # Set default model path if not provided
         if model_path is None:
             base_dir = Path.cwd()
-            model_path = base_dir / "artifacts" / "gesture_svm.pkl"
+            model_path = base_dir / "artifacts" / "gesture_svm_v2.pkl"
         
         self.model_path = Path(model_path)
         self.confidence_threshold = confidence_threshold
@@ -546,7 +546,7 @@ def main():
     """Main function to run the gesture controller."""
     parser = argparse.ArgumentParser(description='Hand Gesture Presentation Controller with Auto Tracking')
     parser.add_argument('--model', type=str, default=None,
-                       help='Path to trained model (default: artifacts/gesture_svm.pkl)')
+                       help='Path to trained model (default: artifacts/gesture_svm_v2.pkl)')
     parser.add_argument('--confidence', type=float, default=0.65,
                        help='Confidence threshold (default: 0.65)')
     parser.add_argument('--cooldown', type=float, default=2.0,

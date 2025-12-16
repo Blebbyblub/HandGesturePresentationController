@@ -1,3 +1,8 @@
+"""
+Hand Gesture Presentation Controller V3
+Real-time gesture recognition for controlling presentations using Canny+HOG features.
+"""
+
 import cv2
 import numpy as np
 import joblib
@@ -5,33 +10,39 @@ import time
 import pyautogui
 from skimage.feature import hog
 from pathlib import Path
-import argparse
-from collections import deque
 import statistics
+from collections import deque
 
 ###############################################################################
 # CONFIGURATION SECTION
-# Edit these values to customize the behavior
 ###############################################################################
 
 class GestureConfig:
     """Configuration for Hand Gesture Presentation Controller"""
     
     # ========== MODEL SETTINGS ==========
-    MODEL_PATH = "artifacts/gesture_svm_v2.pkl"  # Path to trained model
-    BACKUP_MODEL_PATH = "artifacts/gesture_svm.pkl"  # Fallback model
+    MODEL_PATH = "artifacts/gesture_svm_v2_Wcanny.pkl"  
+    BACKUP_MODEL_PATH = "artifacts/gesture_svm.pkl"  
     
-    # ========== HOG PARAMETERS (from notebook) ==========
+    # ========== CANNY EDGE PARAMETERS ==========
+    CANNY_PARAMS = {
+        "threshold1": 50,  
+        "threshold2": 150,  
+        "apertureSize": 3,
+        "L2gradient": True,
+    }
+
+    # ========== HOG PARAMETERS ==========
     HOG_PARAMS = {
         "orientations": 9,
-        "pixels_per_cell": (16, 16),  # Changed from (8, 8) to (16, 16)
+        "pixels_per_cell": (16, 16),  
         "cells_per_block": (2, 2),
         "transform_sqrt": True,
         "block_norm": "L2-Hys",
         "feature_vector": True,
     }
     
-    TARGET_IMAGE_SIZE = (128, 128)  # Image size for feature extraction
+    TARGET_IMAGE_SIZE = (128, 128)
     
     # ========== GESTURE MAPPING ==========
     LABEL_MAP = {
@@ -41,95 +52,47 @@ class GestureConfig:
     }
     
     ACTION_MAP = {
-        "next": "right",  # Right arrow key for next slide
-        "previous": "left"  # Left arrow key for previous slide
+        "next": "right",
+        "previous": "left"
     }
     
     # ========== INFERENCE SETTINGS ==========
-    CONFIDENCE_THRESHOLD = 0.70  # Minimum confidence to consider prediction
-    COOLDOWN_SECONDS = 2.0  # Minimum time between triggers
+    CONFIDENCE_THRESHOLD = 0.70
+    COOLDOWN_SECONDS = 2.0
     
     # ========== HAND DETECTION SETTINGS ==========
-    USE_MEDIAPIPE = True  # Use MediaPipe for hand detection (recommended)
-    AUTO_ROI_PADDING = 50  # Padding around detected hand (pixels)
-    MIN_HAND_SIZE = 100  # Minimum hand size to detect (pixels)
+    USE_MEDIAPIPE = True
+    AUTO_ROI_PADDING = 50
+    MIN_HAND_SIZE = 100
     
     # ========== SMOOTHING SETTINGS ==========
-    SMOOTHING_FRAMES = 5  # Number of frames for consensus voting
-    CONSENSUS_REQUIRED = "all"  # "all" = all frames must agree, "majority" = majority vote
+    SMOOTHING_FRAMES = 5
+    CONSENSUS_REQUIRED = "majority"
     
     # ========== DISPLAY SETTINGS ==========
-    DISPLAY_FPS = True  # Show FPS counter
-    SHOW_HISTORY = True  # Show prediction history
-    SHOW_CONFIDENCE = True  # Show confidence score
-    SHOW_INSTRUCTIONS = False  # Show control instructions (only 'q' to quit)
+    DISPLAY_FPS = True
+    SHOW_HISTORY = True
+    SHOW_CONFIDENCE = True
+    SHOW_INSTRUCTIONS = True
     
     # ========== VISUAL APPEARANCE ==========
-    ROI_COLOR_HIGH_CONF = (0, 255, 0)  # Green for high confidence
-    ROI_COLOR_LOW_CONF = (0, 165, 255)  # Orange for low confidence
-    TEXT_COLOR = (255, 255, 255)  # White text
-    WINDOW_NAME = "Hand Gesture Controller V2"
+    ROI_COLOR_HIGH_CONF = (0, 255, 0)
+    ROI_COLOR_LOW_CONF = (0, 165, 255)
+    TEXT_COLOR = (255, 255, 255)
+    WINDOW_NAME = "Hand Gesture Controller"
     
     # ========== CAMERA SETTINGS ==========
-    CAMERA_ID = 0  # Default camera ID
-    CAMERA_WIDTH = 640  # Desired camera width
-    CAMERA_HEIGHT = 480  # Desired camera height
-    FLIP_HORIZONTAL = True  # Flip camera horizontally for mirror effect
+    CAMERA_ID = 0
+    CAMERA_WIDTH = 640
+    CAMERA_HEIGHT = 480
+    FLIP_HORIZONTAL = True
     
     # ========== CONTROL KEYS ==========
-    KEY_QUIT = 'q'  # Only key needed
+    KEY_QUIT = 'q'
     
     # ========== DEBUG SETTINGS ==========
-    VERBOSE = True  # Print debug information
-    PRINT_PREDICTIONS = False  # Print every prediction (can be noisy)
-    
-    @classmethod
-    def print_config(cls):
-        """Print current configuration"""
-        print("="*50)
-        print("GESTURE CONTROLLER CONFIGURATION")
-        print("="*50)
-        
-        sections = [
-            ("Model Settings", [
-                f"Model Path: {cls.MODEL_PATH}",
-                f"Backup Model: {cls.BACKUP_MODEL_PATH}",
-                f"Confidence Threshold: {cls.CONFIDENCE_THRESHOLD}",
-                f"Cooldown: {cls.COOLDOWN_SECONDS}s",
-            ]),
-            ("HOG Parameters", [
-                f"Image Size: {cls.TARGET_IMAGE_SIZE}",
-                f"Pixels per Cell: {cls.HOG_PARAMS['pixels_per_cell']}",
-                f"Orientations: {cls.HOG_PARAMS['orientations']}",
-            ]),
-            ("Hand Detection", [
-                f"Use MediaPipe: {cls.USE_MEDIAPIPE}",
-                f"ROI Padding: {cls.AUTO_ROI_PADDING}px",
-                f"Min Hand Size: {cls.MIN_HAND_SIZE}px",
-            ]),
-            ("Smoothing", [
-                f"Smoothing Frames: {cls.SMOOTHING_FRAMES}",
-                f"Consensus Required: {cls.CONSENSUS_REQUIRED}",
-            ]),
-            ("Display", [
-                f"Show FPS: {cls.DISPLAY_FPS}",
-                f"Show History: {cls.SHOW_HISTORY}",
-                f"Window Name: {cls.WINDOW_NAME}",
-            ]),
-            ("Camera", [
-                f"Camera ID: {cls.CAMERA_ID}",
-                f"Resolution: {cls.CAMERA_WIDTH}x{cls.CAMERA_HEIGHT}",
-                f"Flip Horizontal: {cls.FLIP_HORIZONTAL}",
-            ]),
-        ]
-        
-        for section_name, settings in sections:
-            print(f"\n{section_name}:")
-            for setting in settings:
-                print(f"  {setting}")
-        
-        print("="*50)
-
+    VERBOSE = True
+    PRINT_PREDICTIONS = False
 
 ###############################################################################
 # MAIN GESTURE CONTROLLER CLASS
@@ -139,48 +102,52 @@ class GestureController:
     def __init__(self, config_obj=None):
         """
         Initialize the Gesture Controller for real-time hand gesture recognition.
-        
-        Args:
-            config_obj: Configuration object (defaults to GestureConfig)
         """
-        # Use provided config or default
         self.cfg = config_obj if config_obj else GestureConfig
         
-        # Print configuration
-        if self.cfg.VERBOSE:
-            self.cfg.print_config()
-        
-        # Initialize state variables
+        # State variables
         self.hand_detector = None
         self.current_roi = None
         self.last_good_roi = None
         self.hand_detected = False
         self.last_trigger = 0.0
         self.cap = None
+        self.fps = 0
         
         # Prediction history for smoothing
         self.prediction_history = deque(maxlen=self.cfg.SMOOTHING_FRAMES)
         
+        # Print configuration
+        if self.cfg.VERBOSE:
+            self.print_basic_info()
+        
         # Load the trained model
         self.load_model()
-        
+    
+    def print_basic_info(self):
+        """Print basic startup information."""
+        print("="*50)
+        print("HAND GESTURE CONTROLLER")
+        print("="*50)
+        print(f"Model: {self.cfg.MODEL_PATH}")
+        print(f"Camera: {self.cfg.CAMERA_ID}")
+        print(f"Hand Detection: {'MediaPipe' if self.cfg.USE_MEDIAPIPE else 'Skin Color'}")
+        print("="*50)
+    
     def load_model(self):
         """Load the trained SVM model and preprocessing parameters."""
-        model_path = Path(self.cfg.MODEL_PATH)
+        model_path = Path(self.cfg.MODEL_PATH) 
         
         try:
             bundle = joblib.load(model_path)
-            print(f"✓ Model loaded successfully from {model_path}")
+            print(f"✓ Model loaded successfully")
         except FileNotFoundError:
-            if self.cfg.VERBOSE:
-                print(f"⚠️ V2 model not found. Trying backup model...")
-            # Try backup model
             backup_path = Path(self.cfg.BACKUP_MODEL_PATH)
             try:
                 bundle = joblib.load(backup_path)
-                print(f"✓ Backup model loaded from {backup_path}")
+                print(f"✓ Backup model loaded")
             except FileNotFoundError:
-                print(f"❌ Error: No model found at {model_path} or {backup_path}")
+                print(f"❌ Error: No model found")
                 print("Please run the training notebook first.")
                 raise
         
@@ -188,19 +155,15 @@ class GestureController:
         self.clf = bundle["model"]
         self.target_size = tuple(bundle.get("target_size", self.cfg.TARGET_IMAGE_SIZE))
         
-        # Use HOG parameters from config (overriding saved ones if needed)
+        # Use parameters from config
         self.hog_params = self.cfg.HOG_PARAMS.copy()
-        
-        if self.cfg.VERBOSE:
-            print(f"✓ Target image size: {self.target_size}")
-            print(f"✓ Available classes: {self.clf.classes_}")
-            print(f"✓ Model kernel: {self.clf.kernel}")
+        self.canny_params = self.cfg.CANNY_PARAMS.copy()
     
     def init_hand_detector(self):
         """Initialize hand detector based on configuration."""
         if self.cfg.USE_MEDIAPIPE:
             try:
-                import mediapipe as mp
+                import mediapipe as mp 
                 self.mp_hands = mp.solutions.hands
                 self.hand_detector = self.mp_hands.Hands(
                     static_image_mode=False,
@@ -212,12 +175,11 @@ class GestureController:
                     print("✓ MediaPipe hand detector initialized")
                 return True
             except ImportError:
-                if self.cfg.VERBOSE:
-                    print("⚠️ MediaPipe not installed. Using skin detection.")
-                    print("   Install with: pip install mediapipe")
-                return False
+                print("⚠️ MediaPipe not installed. Using skin detection.")
+                print("   Install with: pip install mediapipe")
+                self.cfg.USE_MEDIAPIPE = False 
+                return self.init_hand_detector()
         
-        # If MediaPipe is disabled or not available
         if self.cfg.VERBOSE:
             print("✓ Using OpenCV skin detection")
         return True
@@ -241,7 +203,7 @@ class GestureController:
             x_min, x_max = int(min(x_coords)), int(max(x_coords))
             y_min, y_max = int(min(y_coords)), int(max(y_coords))
             
-            # Add padding and ensure minimum size
+            # Add padding
             roi = self._adjust_roi_with_constraints(x_min, y_min, x_max, y_max, frame.shape)
             
             if roi:
@@ -282,7 +244,7 @@ class GestureController:
                 self.hand_detected = False
                 return None
             
-            # Add padding and adjust
+            # Add padding
             x_min = max(0, x - self.cfg.AUTO_ROI_PADDING)
             y_min = max(0, y - self.cfg.AUTO_ROI_PADDING)
             x_max = min(frame.shape[1], x + w + self.cfg.AUTO_ROI_PADDING)
@@ -332,7 +294,7 @@ class GestureController:
         return roi
     
     def preprocess_frame(self, frame, roi_bounds):
-        """Preprocess the ROI frame for inference."""
+        """Preprocess the ROI frame for inference using Canny+HOG features."""
         if roi_bounds is None:
             return None
         
@@ -342,24 +304,54 @@ class GestureController:
         if x1 <= x0 or y1 <= y0:
             return None
         
-        # Extract and preprocess ROI
+        # Extract ROI
         roi_frame = frame[y0:y1, x0:x1]
         if roi_frame.size == 0:
             return None
         
-        # Convert to grayscale
+        # 1. Convert to grayscale and resize
         gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+        resized_gray = cv2.resize(gray, self.target_size)
         
-        # Resize
-        resized = cv2.resize(gray, self.target_size)
+        # 2. Apply Canny Edge detection
+        edges = cv2.Canny(
+            resized_gray,
+            threshold1=self.canny_params["threshold1"],
+            threshold2=self.canny_params["threshold2"],
+            apertureSize=self.canny_params["apertureSize"],
+            L2gradient=self.canny_params["L2gradient"]
+        )
         
-        # Normalize
-        normalized = resized.astype("float32") / 255.0
+        # 3. Normalize edge map
+        edges_normalized = edges.astype(np.float32) / 255.0
         
-        # Extract HOG features
-        descriptor = hog(normalized, **self.hog_params)
+        # 4. Compute HOG on the edge-detected image
+        hog_features = hog(
+            edges_normalized,
+            orientations=self.hog_params["orientations"],
+            pixels_per_cell=self.hog_params["pixels_per_cell"],
+            cells_per_block=self.hog_params["cells_per_block"],
+            transform_sqrt=self.hog_params["transform_sqrt"],
+            block_norm=self.hog_params["block_norm"],
+            feature_vector=self.hog_params["feature_vector"]
+        )
         
-        return descriptor.reshape(1, -1)
+        # 5. Flatten the Canny edge map
+        canny_flat = edges.flatten().astype(np.float32) / 255.0
+        
+        # 6. Concatenate both feature sets
+        combined_features = np.concatenate([hog_features, canny_flat])
+        
+        # Ensure dimension matches
+        if combined_features.shape[0] != self.clf.n_features_in_:
+            # Pad or truncate to match
+            if combined_features.shape[0] > self.clf.n_features_in_:
+                combined_features = combined_features[:self.clf.n_features_in_]
+            else:
+                padding = np.zeros(self.clf.n_features_in_ - combined_features.shape[0])
+                combined_features = np.concatenate([combined_features, padding])
+        
+        return combined_features.reshape(1, -1)
     
     def get_consensus_prediction(self):
         """Get consensus prediction from history."""
@@ -409,7 +401,8 @@ class GestureController:
             
             # Update history
             if confidence > self.cfg.CONFIDENCE_THRESHOLD:
-                self.prediction_history.append(current_label)
+                mapped_label = self.cfg.LABEL_MAP.get(current_label, current_label)
+                self.prediction_history.append(mapped_label)
             else:
                 self.prediction_history.append("neutral")
             
@@ -541,11 +534,11 @@ class GestureController:
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 (0, 255, 0),
-                1,
+                2,
             )
             y_offset += line_height
         
-        # Simple quit instruction only
+        # Instructions
         if self.cfg.SHOW_INSTRUCTIONS:
             cv2.putText(
                 frame,
@@ -591,12 +584,11 @@ class GestureController:
             
             if self.cfg.VERBOSE:
                 action = "Next" if predicted_label == "next" else "Previous"
-                print(f"✓ Triggered: {action} Slide")
+                print(f"✓ {action} Slide")
             
             return True
         except Exception as e:
-            if self.cfg.VERBOSE:
-                print(f"Error triggering action: {e}")
+            print(f"Error triggering action: {e}")
             return False
     
     def run(self):
@@ -611,10 +603,10 @@ class GestureController:
         # Initialize camera
         self.cap = cv2.VideoCapture(self.cfg.CAMERA_ID)
         if not self.cap.isOpened():
-            print("❌ Error: Unable to open webcam.")
+            print("❌ Unable to open webcam.")
             return
         
-        # Set camera resolution if possible
+        # Set camera resolution
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.CAMERA_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.CAMERA_HEIGHT)
         
@@ -636,7 +628,7 @@ class GestureController:
                 # Read frame
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("❌ Error: Failed to capture frame.")
+                    print("❌ Failed to capture frame.")
                     break
                 
                 # Flip frame if configured
@@ -648,7 +640,10 @@ class GestureController:
                 
                 # Trigger action if consensus reached
                 if predicted_label:
-                    if self.trigger_action(predicted_label):
+                    # Map back to original label
+                    final_label = next((k for k, v in self.cfg.LABEL_MAP.items() if v == predicted_label), predicted_label)
+                    
+                    if self.trigger_action(final_label):
                         # Flash ROI to indicate action
                         if self.current_roi:
                             x0, y0, x1, y1 = self.current_roi
@@ -665,14 +660,14 @@ class GestureController:
                 # Display frame
                 cv2.imshow(self.cfg.WINDOW_NAME, display_frame)
                 
-                # Handle keyboard input - only 'q' to quit
+                # Handle keyboard input
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord(self.cfg.KEY_QUIT):
-                    print("\nExiting gesture controller...")
+                    print("\nExiting...")
                     break
                 
         except KeyboardInterrupt:
-            print("\nGesture controller interrupted by user.")
+            print("\nInterrupted by user.")
         finally:
             self._cleanup()
     
@@ -680,8 +675,10 @@ class GestureController:
         """Clean up resources."""
         if self.cap:
             self.cap.release()
-        if self.hand_detector:
+        
+        if hasattr(self, 'hand_detector') and self.hand_detector and hasattr(self.hand_detector, 'close'):
             self.hand_detector.close()
+             
         cv2.destroyAllWindows()
         
         if self.cfg.VERBOSE:
@@ -689,35 +686,14 @@ class GestureController:
 
 
 ###############################################################################
-# SIMPLE RUNNER (no command line arguments needed)
+# SIMPLE RUNNER
 ###############################################################################
 
 def run_simple():
     """Run the gesture controller with default settings."""
-    controller = GestureController(GestureConfig)
-    controller.run()
-
-
-def run_with_custom_config():
-    """Run with custom configuration (edit values below)."""
-    
-    # Create custom configuration by modifying the default
-    class CustomConfig(GestureConfig):
-        # Override any settings you want
-        CONFIDENCE_THRESHOLD = 0.65  # Lower threshold
-        SMOOTHING_FRAMES = 3  # Fewer frames for faster response
-        AUTO_ROI_PADDING = 40  # Less padding
-        USE_MEDIAPIPE = False  # Use skin detection instead
-        SHOW_INSTRUCTIONS = False  # Don't show instructions on screen
-    
-    # Run with custom config
-    controller = GestureController(CustomConfig)
+    controller = GestureController()
     controller.run()
 
 
 if __name__ == "__main__":
-    # Option 1: Run with default settings (recommended)
     run_simple()
-    
-    # Option 2: Run with custom configuration (edit above)
-    # run_with_custom_config()

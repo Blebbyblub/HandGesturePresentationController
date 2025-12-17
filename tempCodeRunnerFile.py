@@ -46,20 +46,25 @@ class GestureConfig:
     
     # ========== GESTURE MAPPING ==========
     # Map model predictions to consistent action labels
-    # IMPORTANT: This should match the labels your model was trained with
-    # Model might output "next", "prev", "back", etc.
     LABEL_MAP = {
-        "next": "next",           # "next" gesture stays as "next"
-        "prev": "previous",       # "prev" gesture maps to "previous"
-        "back": "previous",       # "back" gesture maps to "previous"
-        "previous": "previous"    # "previous" gesture stays as "previous"
+        "next": "next",          # "next" gesture stays as "next"
+        "back": "previous",      # "back" gesture maps to "previous"
+        "prev": "previous"       # "prev" gesture maps to "previous"
     }
     
     # ========== ACTION MAPPING ==========
     # Map action labels to keyboard keys
+    # Using arrow keys for presentation control
     ACTION_MAP = {
         "next": "right",        # Right arrow key for next slide
         "previous": "left"      # Left arrow key for previous slide
+    }
+    
+    # ========== KEYBOARD COMMANDS ==========
+    # Alternative key mappings if needed
+    ALT_ACTION_MAP = {
+        "next": ["right", "pagedown", "space", "n"],
+        "previous": ["left", "pageup", "p", "b"]
     }
     
     # ========== INFERENCE SETTINGS ==========
@@ -86,14 +91,13 @@ class GestureConfig:
     SHOW_CONFIDENCE = True
     SHOW_INSTRUCTIONS = True
     SHOW_MODEL_INFO = True
-    SHOW_KEY_INFO = True
-    SHOW_ALL_PREDICTIONS = True  # Show all prediction probabilities
+    SHOW_KEY_INFO = True  # Show which key will be pressed
     
     # ========== VISUAL APPEARANCE ==========
     ROI_COLOR_HIGH_CONF = (0, 255, 0)
     ROI_COLOR_LOW_CONF = (0, 165, 255)
     TEXT_COLOR = (255, 255, 255)
-    WINDOW_NAME = "Hand Gesture Controller"
+    WINDOW_NAME = "Hand Gesture Controller - Arrow Keys"
     
     # ========== CAMERA SETTINGS ==========
     CAMERA_ID = 0
@@ -103,15 +107,13 @@ class GestureConfig:
     
     # ========== CONTROL KEYS ==========
     KEY_QUIT = 'q'
-    KEY_PAUSE = 'p'
-    KEY_DEBUG = 'd'  # Toggle debug mode
+    KEY_PAUSE = 'p'  # Pause/resume gesture detection
     
     # ========== DEBUG SETTINGS ==========
     VERBOSE = True
-    PRINT_PREDICTIONS = True  # Changed to True for debugging
+    PRINT_PREDICTIONS = False
     PRINT_MODEL_INFO = True
-    PRINT_ACTIONS = True
-    DEBUG_MODE = False  # Show detailed prediction info
+    PRINT_ACTIONS = True  # Print when actions are triggered
 
 ###############################################################################
 # MAIN GESTURE CONTROLLER CLASS
@@ -132,13 +134,11 @@ class GestureController:
         self.last_trigger = 0.0
         self.cap = None
         self.fps = 0
-        self.paused = False
-        self.debug_mode = self.cfg.DEBUG_MODE
+        self.paused = False  # Pause state
         
         # Model information
         self.model_params = None
         self.model_kernel = None
-        self.model_classes = []  # Store model's class names
         
         # Prediction history for smoothing
         self.prediction_history = deque(maxlen=self.cfg.SMOOTHING_FRAMES)
@@ -159,26 +159,16 @@ class GestureController:
         print(f"Camera: {self.cfg.CAMERA_ID}")
         print(f"Hand Detection: {'MediaPipe' if self.cfg.USE_MEDIAPIPE else 'Skin Color'}")
         print(f"Controls:")
-        print(f"  • Next Slide: Right Arrow Key (→)")
-        print(f"  • Previous Slide: Left Arrow Key (←)")
+        print(f"  • Next Slide: Right Arrow Key")
+        print(f"  • Previous Slide: Left Arrow Key")
         print(f"  • Pause/Resume: Press '{self.cfg.KEY_PAUSE}'")
-        print(f"  • Debug Mode: Press '{self.cfg.KEY_DEBUG}'")
         print(f"  • Quit: Press '{self.cfg.KEY_QUIT}'")
-        print(f"Label Mapping: {self.cfg.LABEL_MAP}")
         print("="*60)
     
     def get_confidence_threshold(self, label):
         """Get confidence threshold for specific gesture label."""
-        # First try exact match
         if label in self.cfg.CONFIDENCE_THRESHOLDS:
             return self.cfg.CONFIDENCE_THRESHOLDS[label]
-        
-        # Try mapped label
-        mapped_label = self.cfg.LABEL_MAP.get(label, label)
-        if mapped_label in self.cfg.CONFIDENCE_THRESHOLDS:
-            return self.cfg.CONFIDENCE_THRESHOLDS[mapped_label]
-        
-        # Default threshold
         return self.cfg.CONFIDENCE_THRESHOLDS["default"]
     
     def load_model(self):
@@ -193,17 +183,13 @@ class GestureController:
             self.clf = bundle["model"]
             self.target_size = tuple(bundle.get("target_size", self.cfg.TARGET_IMAGE_SIZE))
             
-            # Store model classes
-            self.model_classes = list(self.clf.classes_)
-            
             # Get kernel type from the model
             self.model_kernel = getattr(self.clf, 'kernel', 'unknown')
             
             if self.cfg.PRINT_MODEL_INFO:
                 print(f"✓ Model Details:")
                 print(f"  • Type: {self.clf.__class__.__name__}")
-                print(f"  • Classes: {self.model_classes}")
-                print(f"  • # Features: {self.clf.n_features_in_}")
+                print(f"  • Classes: {self.clf.classes_}")
                 
         except FileNotFoundError:
             backup_path = Path(self.cfg.BACKUP_MODEL_PATH)
@@ -213,7 +199,6 @@ class GestureController:
                 self.clf = bundle["model"]
                 self.target_size = tuple(bundle.get("target_size", self.cfg.TARGET_IMAGE_SIZE))
                 self.model_kernel = getattr(self.clf, 'kernel', 'unknown')
-                self.model_classes = list(self.clf.classes_)
             except FileNotFoundError:
                 print(f"❌ Error: No model found")
                 print("Please run the training notebook first.")
@@ -450,53 +435,33 @@ class GestureController:
         current_label = None
         confidence = 0.0
         confidence_threshold = 0.0
-        all_predictions = {}
         
         if current_roi and self.hand_detected:
             # Extract features and predict
             descriptor = self.preprocess_frame(frame, current_roi)
             
             if descriptor is not None:
-                # Get probabilities for all classes
                 proba = self.clf.predict_proba(descriptor)[0]
                 top_idx = int(np.argmax(proba))
                 current_label = self.clf.classes_[top_idx]
                 confidence = float(proba[top_idx])
                 
-                # Store all predictions for debugging
-                for i, label in enumerate(self.clf.classes_):
-                    all_predictions[label] = float(proba[i])
-                
                 # Get the appropriate confidence threshold for this gesture
-                # Use mapped label for threshold lookup
-                mapped_label = self.cfg.LABEL_MAP.get(current_label, current_label)
-                confidence_threshold = self.get_confidence_threshold(mapped_label)
+                confidence_threshold = self.get_confidence_threshold(current_label)
                 
-                # Debug output
-                if self.cfg.PRINT_PREDICTIONS or self.debug_mode:
-                    print(f"\n=== Prediction ===")
-                    print(f"Raw model output: {current_label} ({confidence:.3f})")
-                    print(f"Mapped to: {mapped_label}")
-                    print(f"Required confidence: {confidence_threshold:.3f}")
-                    print(f"All predictions:")
-                    for label, prob in sorted(all_predictions.items(), key=lambda x: x[1], reverse=True):
-                        mapped = self.cfg.LABEL_MAP.get(label, label)
-                        action = self.cfg.ACTION_MAP.get(mapped, "None")
-                        print(f"  {label:10s} -> {mapped:10s} -> {action:5s}: {prob:.3f}")
+                if self.cfg.PRINT_PREDICTIONS:
+                    print(f"Prediction: {current_label} ({confidence:.2f}) | Threshold: {confidence_threshold:.2f}")
             
-            # Update history - use mapped label
+            # Update history - use label-specific threshold
             if confidence > confidence_threshold:
+                # Map label using LABEL_MAP
                 mapped_label = self.cfg.LABEL_MAP.get(current_label, current_label)
                 self.prediction_history.append(mapped_label)
             else:
                 self.prediction_history.append("neutral")
             
-            # Draw ROI and info
+            # Draw ROI and info with label-specific threshold display
             self._draw_roi_and_info(display_frame, current_roi, current_label, confidence, confidence_threshold)
-            
-            # Draw debug info if enabled
-            if self.debug_mode:
-                self._draw_debug_info(display_frame, all_predictions)
         else:
             # No hand detected
             self.prediction_history.clear()
@@ -515,9 +480,6 @@ class GestureController:
         """Draw ROI and prediction info on frame."""
         x0, y0, x1, y1 = roi
         
-        # Map label for display
-        mapped_label = self.cfg.LABEL_MAP.get(label, label)
-        
         # Choose color based on confidence compared to label-specific threshold
         if confidence >= threshold:
             color = self.cfg.ROI_COLOR_HIGH_CONF
@@ -535,9 +497,9 @@ class GestureController:
         
         # Draw label and confidence with threshold info
         if self.cfg.SHOW_CONFIDENCE:
-            label_text = f"{mapped_label}: {confidence:.2f} (req: {threshold:.2f})"
+            label_text = f"{label}: {confidence:.2f} (req: {threshold:.2f})"
         else:
-            label_text = f"{mapped_label}"
+            label_text = f"{label}"
         
         cv2.putText(
             frame,
@@ -548,42 +510,6 @@ class GestureController:
             color,
             2,
         )
-    
-    def _draw_debug_info(self, frame, predictions):
-        """Draw debug prediction information."""
-        y_offset = frame.shape[0] - 150
-        line_height = 20
-        
-        cv2.putText(
-            frame,
-            "DEBUG MODE - All Predictions:",
-            (10, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 0),
-            1,
-        )
-        y_offset += line_height
-        
-        # Sort predictions by probability
-        sorted_preds = sorted(predictions.items(), key=lambda x: x[1], reverse=True)
-        
-        for label, prob in sorted_preds:
-            mapped_label = self.cfg.LABEL_MAP.get(label, label)
-            action = self.cfg.ACTION_MAP.get(mapped_label, "None")
-            color = (0, 255, 0) if prob > 0.5 else (200, 200, 200)
-            
-            text = f"{label} -> {mapped_label} -> {action}: {prob:.3f}"
-            cv2.putText(
-                frame,
-                text,
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
-                color,
-                1,
-            )
-            y_offset += line_height
     
     def _draw_no_hand_message(self, frame):
         """Draw message when no hand is detected."""
@@ -653,20 +579,6 @@ class GestureController:
         )
         y_offset += line_height
         
-        # Model classes
-        if self.cfg.SHOW_MODEL_INFO:
-            classes_str = ", ".join(self.model_classes)
-            cv2.putText(
-                frame,
-                f"Model classes: {classes_str}",
-                (10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (200, 200, 200),
-                1,
-            )
-            y_offset += line_height
-        
         # Key mapping info
         if self.cfg.SHOW_KEY_INFO:
             cv2.putText(
@@ -711,24 +623,12 @@ class GestureController:
             )
             y_offset += line_height
         
-        # Debug mode indicator
-        if self.debug_mode:
-            cv2.putText(
-                frame,
-                "DEBUG MODE",
-                (frame.shape[1] - 120, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 0),
-                2,
-            )
-        
         # Instructions
         if self.cfg.SHOW_INSTRUCTIONS:
             cv2.putText(
                 frame,
-                f"Press '{self.cfg.KEY_PAUSE}' to pause | '{self.cfg.KEY_DEBUG}' debug | '{self.cfg.KEY_QUIT}' quit",
-                (10, frame.shape[0] - 10),
+                f"Press '{self.cfg.KEY_PAUSE}' to pause/resume | '{self.cfg.KEY_QUIT}' to quit",
+                (10, frame.shape[0] - 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 self.cfg.TEXT_COLOR,
@@ -740,7 +640,7 @@ class GestureController:
             cv2.putText(
                 frame,
                 f"FPS: {self.fps:.1f}",
-                (frame.shape[1] - 100, frame.shape[0] - 10),
+                (frame.shape[1] - 100, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 self.cfg.TEXT_COLOR,
@@ -785,14 +685,14 @@ class GestureController:
         print(f"  Next Slide: Right Arrow Key (→)")
         print(f"  Previous Slide: Left Arrow Key (←)")
         print(f"  Pause/Resume: Press '{self.cfg.KEY_PAUSE}'")
-        print(f"  Debug Mode: Press '{self.cfg.KEY_DEBUG}'")
         print(f"  Quit: Press '{self.cfg.KEY_QUIT}'")
         print("="*60)
-        print(f"Model classes detected: {self.model_classes}")
-        print(f"Label mapping: {self.cfg.LABEL_MAP}")
-        print(f"Action mapping: {self.cfg.ACTION_MAP}")
-        print("="*60)
         print("Make sure your presentation software is active!")
+        print("Common presentation software that works with arrow keys:")
+        print("  • Microsoft PowerPoint")
+        print("  • Google Slides")
+        print("  • Keynote")
+        print("  • LibreOffice Impress")
         print("="*60)
         
         # Initialize camera
@@ -817,6 +717,7 @@ class GestureController:
         
         print("\nStarting gesture controller...")
         print("Show your hand to begin detection!\n")
+        print("Tip: Make sure your presentation software is the active window.")
         
         try:
             while True:
@@ -836,8 +737,10 @@ class GestureController:
                     
                     # Trigger action if consensus reached
                     if predicted_label:
-                        # Already mapped in predict_gesture, use directly
-                        if self.trigger_action(predicted_label):
+                        # Map back to original label
+                        final_label = next((k for k, v in self.cfg.LABEL_MAP.items() if v == predicted_label), predicted_label)
+                        
+                        if self.trigger_action(final_label):
                             # Flash ROI to indicate action
                             if self.current_roi:
                                 x0, y0, x1, y1 = self.current_roi
@@ -875,10 +778,6 @@ class GestureController:
                     self.paused = not self.paused
                     status = "PAUSED" if self.paused else "RESUMED"
                     print(f"\n{status} gesture detection")
-                elif key == ord(self.cfg.KEY_DEBUG):
-                    self.debug_mode = not self.debug_mode
-                    status = "ENABLED" if self.debug_mode else "DISABLED"
-                    print(f"\nDebug mode {status}")
                 
         except KeyboardInterrupt:
             print("\nInterrupted by user.")

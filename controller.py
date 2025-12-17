@@ -21,7 +21,7 @@ class GestureConfig:
     """Configuration for Hand Gesture Presentation Controller"""
     
     # ========== MODEL SETTINGS ==========
-    MODEL_PATH = "artifacts/gesture_svm_v2_Wcanny.pkl"  
+    MODEL_PATH = "artifacts/gesture_svm_v3.pkl"  
     BACKUP_MODEL_PATH = "artifacts/gesture_svm.pkl"  
     
     # ========== CANNY EDGE PARAMETERS ==========

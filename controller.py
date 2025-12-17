@@ -76,6 +76,11 @@ class GestureConfig:
     AUTO_ROI_PADDING = 30
     MIN_HAND_SIZE = 80
     
+    # ========== NEW HAND DETECTION SETTINGS ==========
+    HAND_STABILITY_THRESHOLD = 5  # Frames a hand must be stable before switching
+    NEW_HAND_DISTANCE_THRESHOLD = 100  # Pixels - minimum distance to consider as new hand
+    HAND_TRACKING_ENABLED = True  # Enable/disable hand tracking
+    
     # ========== SMOOTHING SETTINGS ==========
     SMOOTHING_FRAMES = 3
     CONSENSUS_REQUIRED = "majority"
@@ -88,10 +93,13 @@ class GestureConfig:
     SHOW_MODEL_INFO = True
     SHOW_KEY_INFO = True
     SHOW_ALL_PREDICTIONS = True  # Show all prediction probabilities
+    SHOW_HAND_TRACKING_INFO = True  # Show hand tracking information
     
     # ========== VISUAL APPEARANCE ==========
     ROI_COLOR_HIGH_CONF = (0, 255, 0)
     ROI_COLOR_LOW_CONF = (0, 165, 255)
+    ROI_COLOR_NEW_HAND = (255, 0, 255)  # Magenta for new hand
+    ROI_COLOR_OLD_HAND = (255, 255, 0)  # Yellow for old hand
     TEXT_COLOR = (255, 255, 255)
     WINDOW_NAME = "Hand Gesture Controller"
     
@@ -105,6 +113,7 @@ class GestureConfig:
     KEY_QUIT = 'q'
     KEY_PAUSE = 'p'
     KEY_DEBUG = 'd'  # Toggle debug mode
+    KEY_TRACKING = 't'  # Toggle hand tracking
     
     # ========== DEBUG SETTINGS ==========
     VERBOSE = True
@@ -112,6 +121,159 @@ class GestureConfig:
     PRINT_MODEL_INFO = True
     PRINT_ACTIONS = True
     DEBUG_MODE = False  # Show detailed prediction info
+
+###############################################################################
+# HAND TRACKING CLASS
+###############################################################################
+
+class HandTracker:
+    """Tracks multiple hands and identifies the newest/most active hand"""
+    
+    def __init__(self, config):
+        self.cfg = config
+        self.tracked_hands = {}  # hand_id: {roi, last_seen, stability_count, first_seen}
+        self.current_hand_id = None
+        self.next_hand_id = 0
+        self.hand_stability_counter = 0
+        self.last_hand_center = None
+        
+    def calculate_center(self, roi):
+        """Calculate center point of ROI"""
+        x0, y0, x1, y1 = roi
+        center_x = (x0 + x1) // 2
+        center_y = (y0 + y1) // 2
+        return (center_x, center_y)
+    
+    def calculate_distance(self, point1, point2):
+        """Calculate Euclidean distance between two points"""
+        if point1 is None or point2 is None:
+            return float('inf')
+        return np.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
+    
+    def find_closest_hand(self, current_center, exclude_id=None):
+        """Find the closest existing hand to the current center"""
+        closest_id = None
+        min_distance = float('inf')
+        
+        for hand_id, hand_data in self.tracked_hands.items():
+            if exclude_id is not None and hand_id == exclude_id:
+                continue
+                
+            if 'center' in hand_data:
+                distance = self.calculate_distance(current_center, hand_data['center'])
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_id = hand_id
+        
+        return closest_id, min_distance
+    
+    def update_tracked_hands(self, current_roi):
+        """Update tracked hands and identify the newest hand"""
+        if current_roi is None:
+            # No hand detected, clear stability counter
+            self.hand_stability_counter = 0
+            return None
+        
+        current_center = self.calculate_center(current_roi)
+        current_time = time.time()
+        
+        # Find closest existing hand
+        closest_id, min_distance = self.find_closest_hand(current_center)
+        
+        # Check if this is a new hand
+        if closest_id is None or min_distance > self.cfg.NEW_HAND_DISTANCE_THRESHOLD:
+            # This might be a new hand, wait for stability
+            if self.last_hand_center is not None:
+                distance_from_last = self.calculate_distance(current_center, self.last_hand_center)
+                
+                # If hand is stable (not moving much)
+                if distance_from_last < 20:  # Small movement threshold
+                    self.hand_stability_counter += 1
+                else:
+                    self.hand_stability_counter = 0
+                    self.last_hand_center = current_center
+            else:
+                self.last_hand_center = current_center
+                self.hand_stability_counter = 1
+            
+            # If hand has been stable enough, register as new hand
+            if self.hand_stability_counter >= self.cfg.HAND_STABILITY_THRESHOLD:
+                # Create new hand entry
+                new_id = self.next_hand_id
+                self.tracked_hands[new_id] = {
+                    'roi': current_roi,
+                    'center': current_center,
+                    'last_seen': current_time,
+                    'stability_count': self.hand_stability_counter,
+                    'first_seen': current_time,
+                    'age': 0  # in seconds
+                }
+                self.next_hand_id += 1
+                self.current_hand_id = new_id
+                self.hand_stability_counter = 0
+                return new_id
+            else:
+                # Still stabilizing, return None or closest existing
+                return self.current_hand_id if self.current_hand_id is not None else closest_id
+        else:
+            # Update existing hand
+            self.tracked_hands[closest_id].update({
+                'roi': current_roi,
+                'center': current_center,
+                'last_seen': current_time,
+                'age': current_time - self.tracked_hands[closest_id]['first_seen']
+            })
+            
+            # Check if we should switch to this hand (if it's newer)
+            if self.current_hand_id is None:
+                self.current_hand_id = closest_id
+            else:
+                # Switch to newer hand if it was detected more recently
+                current_hand_data = self.tracked_hands.get(self.current_hand_id)
+                new_hand_data = self.tracked_hands[closest_id]
+                
+                if (new_hand_data['first_seen'] > current_hand_data['first_seen'] and 
+                    current_time - new_hand_data['first_seen'] < 2.0):  # New within last 2 seconds
+                    self.current_hand_id = closest_id
+            
+            return self.current_hand_id
+    
+    def get_current_roi(self):
+        """Get ROI of current hand"""
+        if self.current_hand_id is not None and self.current_hand_id in self.tracked_hands:
+            return self.tracked_hands[self.current_hand_id]['roi']
+        return None
+    
+    def get_hand_info(self, hand_id):
+        """Get information about a specific hand"""
+        if hand_id in self.tracked_hands:
+            return self.tracked_hands[hand_id]
+        return None
+    
+    def get_all_hands(self):
+        """Get all tracked hands"""
+        return self.tracked_hands
+    
+    def cleanup_old_hands(self, max_age_seconds=10):
+        """Remove hands that haven't been seen for a while"""
+        current_time = time.time()
+        hands_to_remove = []
+        
+        for hand_id, hand_data in self.tracked_hands.items():
+            if current_time - hand_data['last_seen'] > max_age_seconds:
+                hands_to_remove.append(hand_id)
+        
+        for hand_id in hands_to_remove:
+            if hand_id == self.current_hand_id:
+                self.current_hand_id = None
+            del self.tracked_hands[hand_id]
+    
+    def reset(self):
+        """Reset all tracking"""
+        self.tracked_hands.clear()
+        self.current_hand_id = None
+        self.hand_stability_counter = 0
+        self.last_hand_center = None
 
 ###############################################################################
 # MAIN GESTURE CONTROLLER CLASS
@@ -134,6 +296,10 @@ class GestureController:
         self.fps = 0
         self.paused = False
         self.debug_mode = self.cfg.DEBUG_MODE
+        
+        # Initialize hand tracker
+        self.hand_tracker = HandTracker(self.cfg)
+        self.current_hand_id = None
         
         # Model information
         self.model_params = None
@@ -158,11 +324,13 @@ class GestureController:
         print(f"Model: {self.cfg.MODEL_PATH}")
         print(f"Camera: {self.cfg.CAMERA_ID}")
         print(f"Hand Detection: {'MediaPipe' if self.cfg.USE_MEDIAPIPE else 'Skin Color'}")
+        print(f"Hand Tracking: {'Enabled' if self.cfg.HAND_TRACKING_ENABLED else 'Disabled'}")
         print(f"Controls:")
         print(f"  • Next Slide: Right Arrow Key (→)")
         print(f"  • Previous Slide: Left Arrow Key (←)")
         print(f"  • Pause/Resume: Press '{self.cfg.KEY_PAUSE}'")
         print(f"  • Debug Mode: Press '{self.cfg.KEY_DEBUG}'")
+        print(f"  • Tracking Toggle: Press '{self.cfg.KEY_TRACKING}'")
         print(f"  • Quit: Press '{self.cfg.KEY_QUIT}'")
         print(f"Label Mapping: {self.cfg.LABEL_MAP}")
         print("="*60)
@@ -231,7 +399,7 @@ class GestureController:
                 self.mp_hands = mp.solutions.hands
                 self.hand_detector = self.mp_hands.Hands(
                     static_image_mode=False,
-                    max_num_hands=1,
+                    max_num_hands=2,  # Allow detecting multiple hands
                     min_detection_confidence=0.5,
                     min_tracking_confidence=0.5
                 )
@@ -249,7 +417,7 @@ class GestureController:
         return True
     
     def detect_hand_with_mediapipe(self, frame):
-        """Detect hand using MediaPipe."""
+        """Detect hand using MediaPipe and return the newest hand."""
         if not self.hand_detector:
             return None
         
@@ -257,23 +425,45 @@ class GestureController:
         results = self.hand_detector.process(rgb_frame)
         
         if results.multi_hand_landmarks:
-            hand_landmarks = results.multi_hand_landmarks[0]
-            
-            # Get bounding box from landmarks
+            # Get all detected hands
+            all_rois = []
             h, w = frame.shape[:2]
-            x_coords = [lm.x * w for lm in hand_landmarks.landmark]
-            y_coords = [lm.y * h for lm in hand_landmarks.landmark]
             
-            x_min, x_max = int(min(x_coords)), int(max(x_coords))
-            y_min, y_max = int(min(y_coords)), int(max(y_coords))
+            for hand_landmarks in results.multi_hand_landmarks:
+                x_coords = [lm.x * w for lm in hand_landmarks.landmark]
+                y_coords = [lm.y * h for lm in hand_landmarks.landmark]
+                
+                x_min, x_max = int(min(x_coords)), int(max(x_coords))
+                y_min, y_max = int(min(y_coords)), int(max(y_coords))
+                
+                # Add padding
+                roi = self._adjust_roi_with_constraints(x_min, y_min, x_max, y_max, frame.shape)
+                if roi:
+                    all_rois.append(roi)
             
-            # Add padding
-            roi = self._adjust_roi_with_constraints(x_min, y_min, x_max, y_max, frame.shape)
-            
-            if roi:
-                self.last_good_roi = roi
-                self.hand_detected = True
-                return roi
+            if all_rois:
+                # If hand tracking is enabled, use tracker to find newest hand
+                if self.cfg.HAND_TRACKING_ENABLED:
+                    # For each ROI, update tracker
+                    newest_roi = None
+                    for roi in all_rois:
+                        hand_id = self.hand_tracker.update_tracked_hands(roi)
+                        if hand_id is not None:
+                            hand_info = self.hand_tracker.get_hand_info(hand_id)
+                            if hand_info and hand_info.get('first_seen', 0) > 0:
+                                if newest_roi is None or hand_info['first_seen'] > newest_roi[1]:
+                                    newest_roi = (roi, hand_info['first_seen'], hand_id)
+                    
+                    if newest_roi:
+                        self.current_hand_id = newest_roi[2]
+                        self.hand_detected = True
+                        return newest_roi[0]
+                else:
+                    # Simple mode: just use the first (largest) hand
+                    roi = all_rois[0]
+                    self.last_good_roi = roi
+                    self.hand_detected = True
+                    return roi
         
         self.hand_detected = False
         return None
@@ -299,8 +489,11 @@ class GestureController:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
-            # Find the largest contour
-            largest_contour = max(contours, key=cv2.contourArea)
+            # Sort contours by area (largest first)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            
+            # Use the largest contour
+            largest_contour = contours[0]
             x, y, w, h = cv2.boundingRect(largest_contour)
             
             # Skip if too small
@@ -315,6 +508,13 @@ class GestureController:
             y_max = min(frame.shape[0], y + h + self.cfg.AUTO_ROI_PADDING)
             
             roi = (x_min, y_min, x_max, y_max)
+            
+            # Update hand tracker if enabled
+            if self.cfg.HAND_TRACKING_ENABLED:
+                hand_id = self.hand_tracker.update_tracked_hands(roi)
+                if hand_id is not None:
+                    self.current_hand_id = hand_id
+            
             self.last_good_roi = roi
             self.hand_detected = True
             return roi
@@ -348,13 +548,18 @@ class GestureController:
         return (x_min, y_min, x_max, y_max)
     
     def get_current_roi(self, frame):
-        """Get ROI by detecting hand position."""
+        """Get ROI of the newest detected hand."""
         if self.hand_detector and self.cfg.USE_MEDIAPIPE:
             roi = self.detect_hand_with_mediapipe(frame)
         else:
             roi = self.detect_hand_with_skincolor(frame)
         
         self.current_roi = roi
+        
+        # Clean up old hands periodically
+        if self.cfg.HAND_TRACKING_ENABLED and self.cfg.VERBOSE:
+            self.hand_tracker.cleanup_old_hands()
+        
         return roi
     
     def preprocess_frame(self, frame, roi_bounds):
@@ -439,6 +644,81 @@ class GestureController:
         
         return None
     
+    def _draw_hand_tracking_info(self, frame):
+        """Draw hand tracking information on frame."""
+        if not self.cfg.SHOW_HAND_TRACKING_INFO or not self.cfg.HAND_TRACKING_ENABLED:
+            return
+        
+        y_offset = frame.shape[0] - 200
+        line_height = 18
+        
+        # Draw header
+        cv2.putText(
+            frame,
+            "Hand Tracking:",
+            (frame.shape[1] - 200, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 0),
+            1,
+        )
+        y_offset += line_height
+        
+        # Draw tracked hands info
+        all_hands = self.hand_tracker.get_all_hands()
+        
+        if not all_hands:
+            cv2.putText(
+                frame,
+                "No hands tracked",
+                (frame.shape[1] - 200, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (200, 200, 200),
+                1,
+            )
+            y_offset += line_height
+        else:
+            current_time = time.time()
+            for hand_id, hand_data in all_hands.items():
+                age = current_time - hand_data['first_seen']
+                last_seen = current_time - hand_data['last_seen']
+                
+                # Color code: current hand in green, others in blue
+                if hand_id == self.current_hand_id:
+                    color = (0, 255, 0)
+                    prefix = "→ "
+                else:
+                    color = (100, 100, 255)
+                    prefix = "  "
+                
+                hand_info = f"{prefix}Hand {hand_id}: {age:.1f}s old"
+                cv2.putText(
+                    frame,
+                    hand_info,
+                    (frame.shape[1] - 200, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    1,
+                )
+                y_offset += line_height
+        
+        # Draw current hand info
+        if self.current_hand_id is not None:
+            current_hand_info = self.hand_tracker.get_hand_info(self.current_hand_id)
+            if current_hand_info:
+                age = current_time - current_hand_info['first_seen']
+                cv2.putText(
+                    frame,
+                    f"Active: Hand {self.current_hand_id} ({age:.1f}s)",
+                    (frame.shape[1] - 200, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    1,
+                )
+    
     def predict_gesture(self, frame):
         """Predict gesture from frame with smoothing."""
         display_frame = frame.copy()
@@ -509,6 +789,9 @@ class GestureController:
         # Draw UI elements
         self._draw_ui_elements(display_frame, consensus_label)
         
+        # Draw hand tracking info
+        self._draw_hand_tracking_info(display_frame)
+        
         return consensus_label, confidence, display_frame
     
     def _draw_roi_and_info(self, frame, roi, label, confidence, threshold):
@@ -518,11 +801,31 @@ class GestureController:
         # Map label for display
         mapped_label = self.cfg.LABEL_MAP.get(label, label)
         
-        # Choose color based on confidence compared to label-specific threshold
-        if confidence >= threshold:
-            color = self.cfg.ROI_COLOR_HIGH_CONF
+        # Choose color based on hand age and confidence
+        if self.cfg.HAND_TRACKING_ENABLED and self.current_hand_id is not None:
+            hand_info = self.hand_tracker.get_hand_info(self.current_hand_id)
+            if hand_info:
+                age = time.time() - hand_info['first_seen']
+                if age < 2.0:  # Very new hand (less than 2 seconds)
+                    color = self.cfg.ROI_COLOR_NEW_HAND
+                elif age < 5.0:  # Relatively new hand
+                    color = (255, 150, 0)  # Orange
+                else:
+                    if confidence >= threshold:
+                        color = self.cfg.ROI_COLOR_HIGH_CONF
+                    else:
+                        color = self.cfg.ROI_COLOR_LOW_CONF
+            else:
+                if confidence >= threshold:
+                    color = self.cfg.ROI_COLOR_HIGH_CONF
+                else:
+                    color = self.cfg.ROI_COLOR_LOW_CONF
         else:
-            color = self.cfg.ROI_COLOR_LOW_CONF
+            # Default color scheme without tracking
+            if confidence >= threshold:
+                color = self.cfg.ROI_COLOR_HIGH_CONF
+            else:
+                color = self.cfg.ROI_COLOR_LOW_CONF
         
         # Draw semi-transparent overlay
         overlay = frame.copy()
@@ -548,6 +851,22 @@ class GestureController:
             color,
             2,
         )
+        
+        # Draw hand age if tracking is enabled
+        if self.cfg.HAND_TRACKING_ENABLED and self.current_hand_id is not None:
+            hand_info = self.hand_tracker.get_hand_info(self.current_hand_id)
+            if hand_info:
+                age = time.time() - hand_info['first_seen']
+                age_text = f"Age: {age:.1f}s"
+                cv2.putText(
+                    frame,
+                    age_text,
+                    (x0, y1 + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color,
+                    1,
+                )
     
     def _draw_debug_info(self, frame, predictions):
         """Draw debug prediction information."""
@@ -723,11 +1042,23 @@ class GestureController:
                 2,
             )
         
+        # Hand tracking status
+        if self.cfg.HAND_TRACKING_ENABLED:
+            cv2.putText(
+                frame,
+                "TRACKING: ON",
+                (frame.shape[1] - 120, 60),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+            )
+        
         # Instructions
         if self.cfg.SHOW_INSTRUCTIONS:
             cv2.putText(
                 frame,
-                f"Press '{self.cfg.KEY_PAUSE}' to pause | '{self.cfg.KEY_DEBUG}' debug | '{self.cfg.KEY_QUIT}' quit",
+                f"Press '{self.cfg.KEY_PAUSE}'=pause | '{self.cfg.KEY_DEBUG}'=debug | '{self.cfg.KEY_TRACKING}'=track | '{self.cfg.KEY_QUIT}'=quit",
                 (10, frame.shape[0] - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
@@ -786,13 +1117,17 @@ class GestureController:
         print(f"  Previous Slide: Left Arrow Key (←)")
         print(f"  Pause/Resume: Press '{self.cfg.KEY_PAUSE}'")
         print(f"  Debug Mode: Press '{self.cfg.KEY_DEBUG}'")
+        print(f"  Tracking Toggle: Press '{self.cfg.KEY_TRACKING}'")
         print(f"  Quit: Press '{self.cfg.KEY_QUIT}'")
         print("="*60)
         print(f"Model classes detected: {self.model_classes}")
         print(f"Label mapping: {self.cfg.LABEL_MAP}")
         print(f"Action mapping: {self.cfg.ACTION_MAP}")
+        print(f"Hand Tracking: {'Enabled' if self.cfg.HAND_TRACKING_ENABLED else 'Disabled'}")
         print("="*60)
         print("Make sure your presentation software is active!")
+        print("="*60)
+        print("TIP: Show a new hand to switch control to it!")
         print("="*60)
         
         # Initialize camera
@@ -879,6 +1214,12 @@ class GestureController:
                     self.debug_mode = not self.debug_mode
                     status = "ENABLED" if self.debug_mode else "DISABLED"
                     print(f"\nDebug mode {status}")
+                elif key == ord(self.cfg.KEY_TRACKING):
+                    self.cfg.HAND_TRACKING_ENABLED = not self.cfg.HAND_TRACKING_ENABLED
+                    if not self.cfg.HAND_TRACKING_ENABLED:
+                        self.hand_tracker.reset()
+                    status = "ENABLED" if self.cfg.HAND_TRACKING_ENABLED else "DISABLED"
+                    print(f"\nHand tracking {status}")
                 
         except KeyboardInterrupt:
             print("\nInterrupted by user.")

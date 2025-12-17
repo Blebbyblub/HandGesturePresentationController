@@ -73,8 +73,8 @@ class GestureConfig:
     
     # ========== HAND DETECTION SETTINGS ==========
     USE_MEDIAPIPE = True
-    AUTO_ROI_PADDING = 50
-    MIN_HAND_SIZE = 100
+    AUTO_ROI_PADDING = 30
+    MIN_HAND_SIZE = 80
     
     # ========== SMOOTHING SETTINGS ==========
     SMOOTHING_FRAMES = 3

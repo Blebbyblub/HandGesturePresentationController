@@ -12,6 +12,17 @@ from skimage.feature import hog
 from pathlib import Path
 import statistics
 from collections import deque
+import sys
+import os
+
+# PyInstaller bundle path resolution
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and PyInstaller bundle"""
+    if hasattr(sys, '_MEIPASS'):
+        # Running as bundled exe
+        return os.path.join(sys._MEIPASS, relative_path)
+    # Running as script
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
 ###############################################################################
 # CONFIGURATION SECTION
@@ -21,8 +32,8 @@ class GestureConfig:
     """Configuration for Hand Gesture Presentation Controller"""
     
     # ========== MODEL SETTINGS ==========
-    MODEL_PATH = "artifacts/gesture_svm_v3.pkl"  
-    BACKUP_MODEL_PATH = "artifacts/gesture_svm.pkl"  
+    MODEL_PATH = get_resource_path("artifacts/gesture_svm_v3.pkl")
+    BACKUP_MODEL_PATH = get_resource_path("artifacts/gesture_svm.pkl")
     
     # ========== CANNY EDGE PARAMETERS ==========
     CANNY_PARAMS = {
@@ -395,7 +406,13 @@ class GestureController:
         """Initialize hand detector based on configuration."""
         if self.cfg.USE_MEDIAPIPE:
             try:
-                import mediapipe as mp 
+                import mediapipe as mp
+                
+                # Set model path for PyInstaller bundle
+                if hasattr(sys, '_MEIPASS'):
+                    import os
+                    os.environ['MEDIAPIPE_RESOURCE_PATH'] = os.path.join(sys._MEIPASS, 'mediapipe')
+                
                 self.mp_hands = mp.solutions.hands
                 self.hand_detector = self.mp_hands.Hands(
                     static_image_mode=False,
@@ -1201,8 +1218,18 @@ class GestureController:
                 # Display frame
                 cv2.imshow(self.cfg.WINDOW_NAME, display_frame)
                 
-                # Handle keyboard input
+                # Handle keyboard input (must be before window check)
                 key = cv2.waitKey(1) & 0xFF
+                
+                # Check if window was closed with X button (try multiple methods)
+                try:
+                    if cv2.getWindowProperty(self.cfg.WINDOW_NAME, cv2.WND_PROP_AUTOSIZE) == -1:
+                        print("\nWindow closed.")
+                        break
+                except cv2.error:
+                    print("\nWindow closed.")
+                    break
+                
                 if key == ord(self.cfg.KEY_QUIT):
                     print("\nExiting...")
                     break

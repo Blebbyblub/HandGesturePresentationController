@@ -1,0 +1,35 @@
+# Internal files (report drafts, requirements docs)
+internal_files/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.env/
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Temporary files
+tempCodeRunnerFile.py
+*.tmp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

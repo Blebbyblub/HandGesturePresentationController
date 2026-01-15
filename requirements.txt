@@ -1,12 +1,16 @@
-opencv-python>=4.8.0
-scikit-learn>=1.3.0
-numpy>=1.24.0
-pandas>=2.0.0
-scikit-image>=0.21.0
-joblib>=1.3.0
-Pillow>=10.0.0
+# Core dependencies (tested working versions)
+numpy==1.26.4
+opencv-python==4.8.1.78
+opencv-contrib-python==4.8.1.78
+mediapipe==0.10.14
+scikit-learn==1.4.2
+scikit-image==0.22.0
+joblib==1.3.2
 pyautogui>=0.9.54
-mediapipe>=0.10.0
+Pillow>=10.0.0
+
+# Development/Training dependencies
+pandas>=2.0.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 ipykernel>=6.0.0

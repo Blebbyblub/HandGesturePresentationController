@@ -87,7 +87,7 @@ HandGesturePresentationController/
 
 ### Option 1: Download Executable (Easiest)
 
-1. Download `HandGestureController.exe` from [Releases](https://github.com/yourusername/HandGesturePresentationController/releases)
+1. Download `HandGestureController.exe` from [Releases](https://github.com/Blebbyblub/HandGesturePresentationController/releases/tag/v1.0.0)
 2. Double-click to run
 3. Allow webcam access when prompted
 4. Start controlling your presentations!

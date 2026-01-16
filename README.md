@@ -11,7 +11,7 @@ A real-time hand gesture recognition system for controlling presentation slides 
 
 **No installation required!** Download the standalone executable:
 
-👉 **[Download HandGestureController.exe](https://github.com/yourusername/HandGesturePresentationController/releases/latest/download/HandGestureController.exe)** 👈
+👉 **[Download HandGestureController.exe](https://github.com/Blebbyblub/HandGesturePresentationController/releases/tag/v1.0.0)** 👈
 
 > Just download, run, and control your presentations with hand gestures!
 

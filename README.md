@@ -61,28 +61,26 @@ Webcam Input → MediaPipe Hands → ROI Extraction → Canny Edge Detection
 HandGesturePresentationController/
 │
 ├── controller.py           # Main application (run this!)
+├── debug_controller.py     # Debug version with verbose output
+├── build_exe.py            # Build standalone executable
 ├── requirements.txt        # Python dependencies
-├── README.md              # This file
+├── README.md               # This file
 │
-├── artifacts/             # Trained models and features
-│   ├── gesture_svm_v3.pkl # Final SVM model
-│   ├── canny_hog_*.npz    # HOG features (Canny version)
-│   └── hog_*.npz          # HOG features (original)
+├── artifacts/              # Trained models and features
+│   ├── gesture_svm_v3.pkl  # Final SVM model
+│   ├── canny_hog_*.npz     # HOG features (Canny version)
+│   └── hog_*.npz           # HOG features (original)
 │
-├── notebooks/             # Jupyter notebooks for training
-│   ├── new_imageClassify_V3Tuned.ipynb  # Final tuned model
-│   ├── new_imageClassify_V3(Raenault).ipynb
+├── notebooks/              # Jupyter notebooks for training
+│   ├── new_imageClassify_V3(Raenault).ipynb  # Final model
+│   ├── new_imageClassify_V3Tuned.ipynb
 │   ├── new_imageClassify_V2canny.ipynb
 │   ├── new_imageClassify.ipynb
 │   └── ImageClassify.ipynb
 │
-├── scripts/               # Utility scripts
-│   ├── build_exe.py       # PyInstaller build script
-│   └── debug_controller.py # Debug version with verbose output
-│
-├── dataset_final/         # Processed dataset (train/valid/test)
-├── Dataset/               # Raw images (Back/Next)
-└── Dataset_roboflow/      # Roboflow augmented dataset
+├── dataset_final/          # Processed dataset (train/valid/test)
+├── Dataset/                # Raw images (Back/Next)
+└── Dataset_roboflow/       # Roboflow augmented dataset
 ```
 
 ## 🚀 Quick Start
@@ -173,11 +171,41 @@ svm = SVC(kernel='rbf', C=10, gamma='scale')
 ```
 
 To retrain:
-1. Open `notebooks/new_imageClassify_V3Tuned.ipynb`
+1. Open `notebooks/new_imageClassify_V3(Raenault).ipynb`
 2. Run all cells
 3. Model saves to `artifacts/gesture_svm_v3.pkl`
 
+## 🛠️ Development Tools
 
+### Debug Controller
+For development and debugging, use the verbose debug controller:
+
+```bash
+python debug_controller.py
+```
+
+**Features:**
+- Real-time FPS and inference time display
+- Prediction probabilities visualization
+- Canny edge detection preview
+- Consensus buffer status
+- Frame saving (press `S`)
+
+**Controls:** `Q` = Quit | `D` = Toggle debug overlay | `S` = Save frame
+
+### Building Executable
+To create a standalone `.exe` for distribution (no Python required):
+
+```bash
+python build_exe.py
+```
+
+This will:
+1. Install PyInstaller if needed
+2. Bundle the application with all dependencies
+3. Output `dist/HandGestureController.exe`
+
+To clean build artifacts: `python build_exe.py --clean`
 
 ## 📄 License
 
